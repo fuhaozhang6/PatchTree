@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_common.sh
+source "${SCRIPT_DIR}/_common.sh"
+
+configure_single_l20
+configure_deepseek_official
+
+export DATASETS=searchqa
+export MAX_PARALLEL=1
+export WAIT_FOR_JOBS="${WAIT_FOR_JOBS:-1}"
+export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-128}"
+export QWEN_CHAT_TIMEOUT_SECONDS="${QWEN_CHAT_TIMEOUT_SECONDS:-300}"
+export TARGET_QWEN_CHAT_TIMEOUT_SECONDS="${TARGET_QWEN_CHAT_TIMEOUT_SECONDS:-${QWEN_CHAT_TIMEOUT_SECONDS}}"
+export QWEN_CHAT_MAX_TOKENS="${QWEN_CHAT_MAX_TOKENS:-16384}"
+export TARGET_MAX_COMPLETION_TOKENS="${TARGET_MAX_COMPLETION_TOKENS:-16384}"
+
+export NUM_EPOCHS="${NUM_EPOCHS:-4}"
+export SEARCHQA_BATCH_SIZE="${SEARCHQA_BATCH_SIZE:-40}"
+export API_MAX_CONCURRENCY="${API_MAX_CONCURRENCY:-128}"
+export WORKERS="${WORKERS:-128}"
+export ANALYST_WORKERS="${ANALYST_WORKERS:-48}"
+export SEARCHQA_WORKERS="${SEARCHQA_WORKERS:-${WORKERS}}"
+export SEARCHQA_ANALYST_WORKERS="${SEARCHQA_ANALYST_WORKERS:-${ANALYST_WORKERS}}"
+export SEARCHQA_SPLIT_DIR="${SEARCHQA_SPLIT_DIR:-${PROJECT_ROOT}/data/searchqa_split}"
+export SEARCHQA_SEL_ENV_NUM="${SEARCHQA_SEL_ENV_NUM:-200}"
+export SEARCHQA_TEST_ENV_NUM="${SEARCHQA_TEST_ENV_NUM:-400}"
+export SEARCHQA_MAX_TURNS="${SEARCHQA_MAX_TURNS:-1}"
+export SEARCHQA_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM="${SEARCHQA_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-80}"
+export EVAL_TEST="${EVAL_TEST:-true}"
+
+export TYPE_GUIDED_TREE_DEPTH="${TYPE_GUIDED_TREE_DEPTH:-2}"
+export TYPE_GUIDED_CLUSTERING="${TYPE_GUIDED_CLUSTERING:-false}"
+export TYPE_GUIDED_TAIL_BANK="${TYPE_GUIDED_TAIL_BANK:-false}"
+export TYPE_GUIDED_FALLBACK_TOP_K="${TYPE_GUIDED_FALLBACK_TOP_K:-4}"
+
+export TS="${TS:-resource_pool_searchqa_official_$(date +%Y%m%d_%H%M%S)}"
+export LOG_DIR="${LOG_DIR:-${PROJECT_ROOT}/logs/${TS}}"
+export OUT_BASE="${OUT_BASE:-${PROJECT_ROOT}/outputs/${TS}}"
+
+print_resource_header "01-searchqa" "searchqa" "DeepSeek official"
+exec bash "${PROJECT_ROOT}/scripts/runs/multi/run_v3_deepseek_local_qwen_parallel.sh" "$@"
