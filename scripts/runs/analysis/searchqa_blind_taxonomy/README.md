@@ -129,8 +129,10 @@ held-out in-cluster delta >= +0.05
 boundary delta >= -0.02
 ```
 
-The base accuracy comes from the saved three-attempt audit; only patched
-attempts are newly generated.
+The validator now reruns both the initial and patched Skill on the same
+samples, with matching seeds and repeat counts. Acceptance uses these fresh
+paired measurements rather than the saved audit accuracy. By default a type
+also needs at least 10 held-out members and 4 boundary members.
 
 ## Test-set leakage
 
@@ -154,3 +156,31 @@ DRY_RUN=1 LIMIT=4 SHARD_INDEX=0 \
 
 Stage outputs and per-card/per-cluster API results are cached, so rerunning the
 same command resumes rather than repeating completed calls.
+
+## Convenience runner after clustering
+
+Once `clusters/candidate_clusters.json` exists, the following runner checks
+that both extraction shards and all cluster memberships are internally
+consistent, then runs stage 3 with DeepSeek official:
+
+```bash
+DEEPSEEK_API_KEY=... RUN_ID=blind_v1 \
+  bash scripts/runs/analysis/searchqa_blind_taxonomy/05_adjudicate_and_optional_validate_h20.sh
+```
+
+Validation is deliberately disabled on that first command. Review
+`outputs/searchqa_blind_taxonomy_blind_v1/taxonomy/blind_revision_taxonomy.md`,
+then run only stage 4 on one H20:
+
+```bash
+RUN_ID=blind_v1 RUN_ADJUDICATION=0 RUN_TRANSFER_VALIDATION=1 \
+  CUDA_VISIBLE_DEVICES=0 \
+  bash scripts/runs/analysis/searchqa_blind_taxonomy/05_adjudicate_and_optional_validate_h20.sh
+```
+
+The H20 defaults are 128 target workers/sequences, 65536 batched tokens,
+five paired repeats, at most 40 held-out members and 12 boundary members per
+type. A type needs at least 10 held-out and 4 boundary members to pass.
+Use `START_VLLM=0 QWEN_CHAT_BASE_URL=http://host:port/v1` to reuse an existing
+compatible Qwen endpoint. A combined dry preflight is available with
+`DRY_RUN=1`; it makes no DeepSeek or target-model calls.

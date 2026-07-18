@@ -92,6 +92,8 @@ args=(
   --target-max-tokens "${TARGET_MAX_TOKENS:-4096}"
   --max-holdout-per-type "${MAX_HOLDOUT_PER_TYPE:-40}"
   --max-boundary-per-type "${MAX_BOUNDARY_PER_TYPE:-8}"
+  --min-holdout-samples "${MIN_HOLDOUT_SAMPLES:-10}"
+  --min-boundary-samples "${MIN_BOUNDARY_SAMPLES:-4}"
 )
 for ((index=0; index<SHARD_COUNT; index++)); do
   args+=(--cards "${OUT_BASE}/extract_shard${index}of${SHARD_COUNT}")

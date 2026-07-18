@@ -308,6 +308,7 @@ def extract_one(
     cache_path = cache_dir / (
         stable_hash({
             "schema": SCHEMA_VERSION,
+            "system_prompt": stable_hash(BLIND_SYSTEM, 32),
             "key": evidence["sample_key"],
             "skill": stable_hash(skill_content),
             "task": evidence["task_evidence"],

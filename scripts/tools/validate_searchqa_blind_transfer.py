@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -32,6 +33,10 @@ from skillopt.model import (  # noqa: E402
 from skillopt.optimizer.skill import apply_edit  # noqa: E402
 
 
+VALIDATION_SCHEMA_VERSION = "searchqa_blind_transfer_paired_v2"
+PAIR_EPSILON = 1e-12
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--taxonomy", required=True, type=Path)
@@ -50,6 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--max-holdout-per-type", type=int, default=40)
     parser.add_argument("--max-boundary-per-type", type=int, default=8)
+    parser.add_argument("--min-holdout-samples", type=int, default=10)
+    parser.add_argument("--min-boundary-samples", type=int, default=4)
     parser.add_argument("--min-delta-in", type=float, default=0.05)
     parser.add_argument("--max-boundary-drop", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=4242)
@@ -57,11 +64,118 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if min(args.target_workers, args.batch_size, args.repeats) < 1:
         parser.error("worker, batch, and repeat counts must be positive")
+    if min(args.min_holdout_samples, args.min_boundary_samples) < 0:
+        parser.error("minimum validation sample counts must be non-negative")
     return args
 
 
 def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def stable_hash(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def paired_summary(
+    keys: list[str],
+    baseline_new_q: dict[str, float],
+    patched_q: dict[str, float],
+) -> dict[str, Any]:
+    """Summarize paired per-sample changes for one validation cohort."""
+    pairs: list[dict[str, Any]] = []
+    counts = {"improved": 0, "unchanged": 0, "regressed": 0}
+    for key in keys:
+        baseline = float(baseline_new_q[key])
+        patched = float(patched_q[key])
+        delta = patched - baseline
+        if delta > PAIR_EPSILON:
+            outcome = "improved"
+        elif delta < -PAIR_EPSILON:
+            outcome = "regressed"
+        else:
+            outcome = "unchanged"
+        counts[outcome] += 1
+        pairs.append({
+            "sample_key": key,
+            "baseline_new_q_i": baseline,
+            "patched_q_i": patched,
+            "paired_delta": delta,
+            "paired_outcome": outcome,
+        })
+    baseline_accuracy = mean([row["baseline_new_q_i"] for row in pairs])
+    patched_accuracy = mean([row["patched_q_i"] for row in pairs])
+    return {
+        "n": len(pairs),
+        "baseline_new_accuracy": baseline_accuracy,
+        "patched_accuracy": patched_accuracy,
+        "paired_mean_delta": mean([row["paired_delta"] for row in pairs]),
+        "accuracy_delta": patched_accuracy - baseline_accuracy,
+        "improved": counts["improved"],
+        "unchanged": counts["unchanged"],
+        "regressed": counts["regressed"],
+        "pairs": pairs,
+    }
+
+
+def validation_fingerprint(
+    *,
+    type_item: dict[str, Any],
+    initial_skill: str,
+    selected_items: dict[str, dict[str, Any]],
+    holdout: list[str],
+    boundary: list[str],
+    type_index: int,
+    runtime_config_sha256: str,
+    args: argparse.Namespace,
+) -> str:
+    """Fingerprint every input that can affect a cached validation result."""
+    return stable_hash({
+        "schema_version": VALIDATION_SCHEMA_VERSION,
+        "type_id": type_item.get("type_id"),
+        "revision_type": type_item.get("revision_type"),
+        "shared_patch": type_item.get("shared_patch"),
+        "initial_skill_sha256": stable_hash(initial_skill),
+        "runtime_config_sha256": runtime_config_sha256,
+        "holdout_keys": holdout,
+        "boundary_keys": boundary,
+        "selected_items": {
+            key: selected_items[key]
+            for key in sorted(selected_items)
+        },
+        "target": {
+            "model": args.target_model,
+            "base_url": args.target_base_url,
+            "temperature": args.target_temperature,
+            "timeout_seconds": args.target_timeout_seconds,
+            "max_tokens": args.target_max_tokens,
+            "enable_thinking": False,
+        },
+        "sampling": {
+            "repeats": args.repeats,
+            "batch_size": args.batch_size,
+            "seed": args.seed,
+            "type_seed_offset": type_index * 1009,
+        },
+        "acceptance": {
+            "min_holdout_samples": args.min_holdout_samples,
+            "min_boundary_samples": args.min_boundary_samples,
+            "min_delta_in": args.min_delta_in,
+            "max_boundary_drop": args.max_boundary_drop,
+        },
+    })
+
+
+def reusable_cached_result(
+    cached: Any,
+    expected_fingerprint: str,
+) -> bool:
+    return (
+        isinstance(cached, dict)
+        and cached.get("schema_version") == VALIDATION_SCHEMA_VERSION
+        and cached.get("validation_fingerprint") == expected_fingerprint
+    )
 
 
 def main() -> None:
@@ -128,15 +242,12 @@ def main() -> None:
         skill_path = PROJECT_ROOT / skill_path
     initial_skill = skill_path.resolve().read_text(encoding="utf-8")
     output_dir = args.output_dir.expanduser().resolve()
+    runtime_config_sha256 = stable_hash(cfg)
     validation_rows = []
 
     for type_index, item in enumerate(types, 1):
         type_id = str(item["type_id"])
         result_path = output_dir / type_id / "transfer_result.json"
-        if result_path.is_file():
-            validation_rows.append(json.loads(result_path.read_text(encoding="utf-8")))
-            print(f"[resume] {type_id}")
-            continue
         holdout = [
             key for key in (item.get("holdout_member_keys") or [])[:args.max_holdout_per_type]
             if key in items_by_key and key in cards_by_key
@@ -146,8 +257,31 @@ def main() -> None:
             if key in items_by_key and key in cards_by_key and key not in holdout
         ]
         selected = set(holdout + boundary)
+        fingerprint = validation_fingerprint(
+            type_item=item,
+            initial_skill=initial_skill,
+            selected_items={key: items_by_key[key] for key in selected},
+            holdout=holdout,
+            boundary=boundary,
+            type_index=type_index,
+            runtime_config_sha256=runtime_config_sha256,
+            args=args,
+        )
+        if result_path.is_file():
+            try:
+                cached = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                cached = {}
+            if reusable_cached_result(cached, fingerprint):
+                validation_rows.append(cached)
+                print(f"[resume] {type_id} paired cache")
+                continue
+            print(f"[stale] {type_id} cache does not match paired validation inputs")
+
         patched_skill = apply_edit(initial_skill, item["shared_patch"])
+        baseline_new_q: dict[str, float] = {}
         patched_q: dict[str, float] = {}
+        paired_seed_by_key: dict[str, int] = {}
         grouped_by_split: dict[str, list[str]] = defaultdict(list)
         for key in selected:
             grouped_by_split[key.split("::", 1)[0]].append(key)
@@ -155,53 +289,91 @@ def main() -> None:
             keys.sort()
             for start in range(0, len(keys), args.batch_size):
                 batch_keys = keys[start:start + args.batch_size]
-                chunk_dir = output_dir / type_id / "rollouts" / split / f"chunk_{start // args.batch_size:04d}"
-                repeated = repeated_rollout(
+                paired_seed = args.seed + type_index * 1009 + start
+                chunk_root = (
+                    output_dir / type_id / "paired_rollouts" / fingerprint[:16]
+                    / split / f"chunk_{start // args.batch_size:04d}"
+                )
+                baseline_repeated = repeated_rollout(
                     adapter=adapter,
                     dataloader=dataloader,
                     items=[items_by_key[key] for key in batch_keys],
                     split=split,
-                    seed=args.seed + type_index * 1009 + start,
+                    seed=paired_seed,
+                    repeats=args.repeats,
+                    skill_content=initial_skill,
+                    chunk_dir=chunk_root / "baseline_new",
+                )
+                patched_repeated = repeated_rollout(
+                    adapter=adapter,
+                    dataloader=dataloader,
+                    items=[items_by_key[key] for key in batch_keys],
+                    split=split,
+                    seed=paired_seed,
                     repeats=args.repeats,
                     skill_content=patched_skill,
-                    chunk_dir=chunk_dir,
+                    chunk_dir=chunk_root / "patched",
                 )
-                groups = _group_repeated_rollouts(repeated, include_trajectories=False)
+                baseline_groups = _group_repeated_rollouts(
+                    baseline_repeated, include_trajectories=False
+                )
+                patched_groups = _group_repeated_rollouts(
+                    patched_repeated, include_trajectories=False
+                )
                 for key in batch_keys:
                     sample_id = key.split("::", 1)[1]
-                    if sample_id not in groups:
+                    if sample_id not in baseline_groups:
+                        raise RuntimeError(f"missing baseline_new rollout group: {key}")
+                    if sample_id not in patched_groups:
                         raise RuntimeError(f"missing patched rollout group: {key}")
-                    patched_q[key] = _success_rate(groups[sample_id])
-        base_holdout = [float(cards_by_key[key]["q_i"]) for key in holdout]
-        patch_holdout = [patched_q[key] for key in holdout]
-        base_boundary = [float(cards_by_key[key]["q_i"]) for key in boundary]
-        patch_boundary = [patched_q[key] for key in boundary]
-        delta_in = mean(patch_holdout) - mean(base_holdout)
-        delta_boundary = mean(patch_boundary) - mean(base_boundary)
+                    baseline_new_q[key] = _success_rate(baseline_groups[sample_id])
+                    patched_q[key] = _success_rate(patched_groups[sample_id])
+                    paired_seed_by_key[key] = paired_seed
+
+        holdout_summary = paired_summary(holdout, baseline_new_q, patched_q)
+        boundary_summary = paired_summary(boundary, baseline_new_q, patched_q)
+        delta_in = float(holdout_summary["paired_mean_delta"])
+        delta_boundary = float(boundary_summary["paired_mean_delta"])
         accepted = (
-            len(holdout) >= 2
+            len(holdout) >= args.min_holdout_samples
+            and len(boundary) >= args.min_boundary_samples
             and delta_in >= args.min_delta_in
             and delta_boundary >= -args.max_boundary_drop
         )
         result = {
+            "schema_version": VALIDATION_SCHEMA_VERSION,
+            "validation_fingerprint": fingerprint,
             "type_id": type_id,
             "revision_type": item["revision_type"],
             "accepted": accepted,
             "n_holdout": len(holdout),
             "n_boundary": len(boundary),
-            "base_holdout_accuracy": mean(base_holdout),
-            "patched_holdout_accuracy": mean(patch_holdout),
+            "baseline_new_holdout_accuracy": holdout_summary["baseline_new_accuracy"],
+            "patched_holdout_accuracy": holdout_summary["patched_accuracy"],
             "delta_in": delta_in,
-            "base_boundary_accuracy": mean(base_boundary),
-            "patched_boundary_accuracy": mean(patch_boundary),
+            "baseline_new_boundary_accuracy": boundary_summary["baseline_new_accuracy"],
+            "patched_boundary_accuracy": boundary_summary["patched_accuracy"],
             "delta_boundary": delta_boundary,
+            "paired_holdout": holdout_summary,
+            "paired_boundary": boundary_summary,
             "thresholds": {
+                "min_holdout_samples": args.min_holdout_samples,
+                "min_boundary_samples": args.min_boundary_samples,
                 "min_delta_in": args.min_delta_in,
                 "max_boundary_drop": args.max_boundary_drop,
             },
             "holdout_keys": holdout,
             "boundary_keys": boundary,
+            "baseline_new_q_i": baseline_new_q,
             "patched_q_i": patched_q,
+            "paired_seed_by_key": paired_seed_by_key,
+            "validation_protocol": {
+                "paired_ab": True,
+                "baseline_skill": "initial_skill",
+                "repeats": args.repeats,
+                "same_batch_seed_for_baseline_and_patch": True,
+                "stored_card_q_i_used_for_acceptance": False,
+            },
         }
         write_json(result_path, result)
         validation_rows.append(result)
@@ -219,13 +391,19 @@ def main() -> None:
     lines = [
         "# SearchQA blind taxonomy transfer validation",
         "",
-        "| Type | Name | Holdout | Δ in-cluster | Boundary | Δ boundary | Accepted |",
+        "| Type | Name | Holdout (↑/= /↓) | Δ in-cluster | Boundary (↑/= /↓) | Δ boundary | Accepted |",
         "|---|---|---:|---:|---:|---:|---|",
     ]
     for row in validation_rows:
+        holdout_counts = row["paired_holdout"]
+        boundary_counts = row["paired_boundary"]
         lines.append(
-            f"| {row['type_id']} | {row['revision_type']} | {row['n_holdout']} | "
-            f"{row['delta_in']:+.4f} | {row['n_boundary']} | "
+            f"| {row['type_id']} | {row['revision_type']} | "
+            f"{row['n_holdout']} ({holdout_counts['improved']}/"
+            f"{holdout_counts['unchanged']}/{holdout_counts['regressed']}) | "
+            f"{row['delta_in']:+.4f} | {row['n_boundary']} "
+            f"({boundary_counts['improved']}/{boundary_counts['unchanged']}/"
+            f"{boundary_counts['regressed']}) | "
             f"{row['delta_boundary']:+.4f} | {row['accepted']} |"
         )
     (output_dir / "transfer_validation.md").write_text(

@@ -88,6 +88,14 @@ Return one JSON object:
 }
 """
 
+ADJUDICATION_CALL_CONFIG = {
+    "max_completion_tokens": 8000,
+    "retries": 3,
+}
+ADJUDICATION_CACHE_VERSION = "searchqa_blind_adjudication_v2"
+UNSTABLE_EVIDENCE_WEIGHT = 1.5
+UNSTABLE_EVIDENCE_MAX_FRACTION = 2 / 3
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -154,36 +162,105 @@ def select_fit_cards(
         for key in cluster.get("fit_member_keys", [])
         if key in cards_by_key
     ]
-    candidates.sort(key=lambda card: (
+    candidates.sort(key=lambda card: str(card.get("sample_key") or ""))
+    if len(candidates) <= maximum:
+        return [blind_card(card) for card in candidates]
+
+    # The adjudicator must see the evidence composition it is deciding for.
+    # First cover as many outcome_status x split strata as possible, then use
+    # deterministic weighted apportionment. Unstable cards receive a modest
+    # contrast-evidence boost, but cannot consume more than two thirds of the
+    # sample while any non-unstable evidence remains available.
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for card in candidates:
+        key = (
+            str(card.get("outcome_status") or "unknown"),
+            str(card.get("split") or "unknown"),
+        )
+        buckets.setdefault(key, []).append(card)
+    strata = sorted(
+        buckets,
+        key=lambda key: (
+            0 if key[0] == "unstable" else 1,
+            -len(buckets[key]),
+            key,
+        ),
+    )
+    selected_strata = strata[:maximum]
+    allocations = {key: 1 for key in selected_strata}
+    unstable_cap = maximum
+    if any(key[0] == "unstable" for key in selected_strata) and any(
+        key[0] != "unstable" for key in selected_strata
+    ):
+        unstable_cap = max(
+            sum(key[0] == "unstable" for key in selected_strata),
+            int(maximum * UNSTABLE_EVIDENCE_MAX_FRACTION),
+        )
+
+    def can_allocate(key: tuple[str, str]) -> bool:
+        if allocations[key] >= len(buckets[key]):
+            return False
+        if key[0] != "unstable":
+            return True
+        return sum(
+            count
+            for bucket_key, count in allocations.items()
+            if bucket_key[0] == "unstable"
+        ) < unstable_cap
+
+    while sum(allocations.values()) < maximum:
+        available = [key for key in selected_strata if can_allocate(key)]
+        if not available:
+            # The cap prevents avoidable dominance; it must not under-fill the
+            # prompt when the other strata simply contain too few cards.
+            available = [
+                key
+                for key in selected_strata
+                if allocations[key] < len(buckets[key])
+            ]
+        if not available:
+            break
+        # D'Hondt-style apportionment is deterministic, proportional to stratum
+        # size, and gives unstable contrast evidence a bounded 1.5x weight.
+        best = min(
+            available,
+            key=lambda key: (
+                -(
+                    len(buckets[key])
+                    * (UNSTABLE_EVIDENCE_WEIGHT if key[0] == "unstable" else 1.0)
+                    / (allocations[key] + 1)
+                ),
+                0 if key[0] == "unstable" else 1,
+                key,
+            ),
+        )
+        allocations[best] += 1
+
+    chosen: list[dict[str, Any]] = []
+    for key in selected_strata:
+        bucket = buckets[key]
+        count = allocations[key]
+        # Midpoint sampling spreads representatives across the stable key order
+        # rather than taking a lexicographic prefix from each stratum.
+        positions = [
+            min(int((index + 0.5) * len(bucket) / count), len(bucket) - 1)
+            for index in range(count)
+        ]
+        chosen.extend(bucket[index] for index in positions)
+    chosen.sort(key=lambda card: (
         0 if card.get("outcome_status") == "unstable" else 1,
+        str(card.get("outcome_status") or ""),
         str(card.get("split") or ""),
         str(card.get("sample_key") or ""),
     ))
-    if len(candidates) <= maximum:
-        return [blind_card(card) for card in candidates]
-    # Preserve contrast evidence first while sampling the long all-failure tail
-    # deterministically across splits.
-    unstable = [card for card in candidates if card.get("outcome_status") == "unstable"]
-    chosen = unstable[:maximum]
-    if len(chosen) < maximum:
-        failures = [card for card in candidates if card.get("outcome_status") != "unstable"]
-        slots = maximum - len(chosen)
-        if failures:
-            positions = {
-                min(int(index * len(failures) / slots), len(failures) - 1)
-                for index in range(slots)
-            }
-            chosen.extend(failures[index] for index in sorted(positions))
-            chosen.extend(failures[index] for index in range(len(failures)) if failures[index] not in chosen)
-    return [blind_card(card) for card in chosen[:maximum]]
+    return [blind_card(card) for card in chosen]
 
 
 def call_json(system: str, user: str, stage: str) -> dict[str, Any]:
     response, _ = chat_optimizer(
         system=system,
         user=user,
-        max_completion_tokens=8000,
-        retries=3,
+        **ADJUDICATION_CALL_CONFIG,
         stage=stage,
     )
     parsed = extract_json(response)
@@ -240,9 +317,6 @@ def adjudicate_cluster(
     optimizer_model: str,
 ) -> dict[str, Any]:
     cluster_id = str(cluster["cluster_id"])
-    cache_path = cache_dir / f"{cluster_id}_{stable_hash(evidence)}.json"
-    if cache_path.is_file():
-        return json.loads(cache_path.read_text(encoding="utf-8"))
     base_user = (
         f"Candidate cluster: {cluster_id}\n"
         f"Measured support: {cluster['support_count']}\n"
@@ -251,20 +325,42 @@ def adjudicate_cluster(
         f"Outcome counts: {json.dumps(cluster['outcome_counts'])}\n\n"
         f"## Fit cards only\n{json.dumps(evidence, ensure_ascii=False, indent=2)}"
     )
+    draft_suffixes = [
+        f"\n\nProduce independent draft {index + 1}."
+        for index in range(drafts_count)
+    ]
+    reconcile_suffix = (
+        "\n\n## Independent drafts\n{drafts}"
+        "\n\nReconcile against the fit cards. Evidence overrides either draft."
+    )
+    cache_fingerprint = {
+        "cache_version": ADJUDICATION_CACHE_VERSION,
+        "optimizer_model": optimizer_model,
+        "drafts_count": drafts_count,
+        "call_config": ADJUDICATION_CALL_CONFIG,
+        "system_prompt": CLUSTER_SYSTEM,
+        "base_user_prompt": base_user,
+        "draft_prompt_suffixes": draft_suffixes,
+        "reconcile_prompt_template": reconcile_suffix,
+        "evidence": evidence,
+    }
+    cache_path = cache_dir / f"{cluster_id}_{stable_hash(cache_fingerprint)}.json"
+    if cache_path.is_file():
+        return json.loads(cache_path.read_text(encoding="utf-8"))
     drafts = [
         call_json(
             CLUSTER_SYSTEM,
-            base_user + f"\n\nProduce independent draft {index + 1}.",
+            base_user + suffix,
             f"searchqa_blind_cluster_{cluster_id}_draft{index + 1}",
         )
-        for index in range(drafts_count)
+        for index, suffix in enumerate(draft_suffixes)
     ]
     reconciled = call_json(
         CLUSTER_SYSTEM,
         base_user
-        + "\n\n## Independent drafts\n"
-        + json.dumps(drafts, ensure_ascii=False, indent=2)
-        + "\n\nReconcile against the fit cards. Evidence overrides either draft.",
+        + reconcile_suffix.format(
+            drafts=json.dumps(drafts, ensure_ascii=False, indent=2)
+        ),
         f"searchqa_blind_cluster_{cluster_id}_reconcile",
     )
     result = {
