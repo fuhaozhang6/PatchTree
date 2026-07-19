@@ -130,9 +130,11 @@ boundary delta >= -0.02
 ```
 
 The validator now reruns both the initial and patched Skill on the same
-samples, with matching seeds and repeat counts. Acceptance uses these fresh
-paired measurements rather than the saved audit accuracy. By default a type
-also needs at least 10 held-out members and 4 boundary members.
+samples with matching repeat counts. The current Qwen chat adapter does not
+forward the batch seed as a model-generation seed, so the comparison is paired
+by sample but not by identical generation randomness. Acceptance uses these
+fresh paired measurements rather than the saved audit accuracy. By default a
+type also needs at least 10 held-out members and 4 boundary members.
 
 ## Test-set leakage
 
@@ -184,3 +186,60 @@ type. A type needs at least 10 held-out and 4 boundary members to pass.
 Use `START_VLLM=0 QWEN_CHAT_BASE_URL=http://host:port/v1` to reuse an existing
 compatible Qwen endpoint. A combined dry preflight is available with
 `DRY_RUN=1`; it makes no DeepSeek or target-model calls.
+
+## Parent/child abstraction-level validation
+
+After the six-type no-global-merge taxonomy is available, compare a broad
+parent patch, a narrower child patch, and their composition on exactly the same
+samples:
+
+```bash
+RUN_ID=blind_v1 DRY_RUN=1 \
+  bash scripts/runs/analysis/searchqa_blind_taxonomy/06_validate_hierarchy_h20.sh
+
+RUN_ID=blind_v1 CUDA_VISIBLE_DEVICES=0 \
+  bash scripts/runs/analysis/searchqa_blind_taxonomy/06_validate_hierarchy_h20.sh
+```
+
+The default pairs are:
+
+```text
+R_SEARCH_001:R_SEARCH_002:R_SEARCH_004
+  # entity focus -> person-name minimization; containing-entity is the control
+R_SEARCH_001:R_SEARCH_004:R_SEARCH_002
+  # entity focus -> containing-entity resolution; person-name is the control
+```
+
+For each pair, the validator runs `initial`, `parent`, `child`, and
+`parent_plus_child` on the child's held-out members and on a stratified sample
+of parent-reference members. The optional third type after the second colon
+also adds an `unrelated_control` condition. This separates a genuine
+child-specific effect from the generic effect of appending any extra rule.
+Together these conditions test whether the broad rule, the conditional detail,
+or their composition is the useful abstraction level.
+Outputs are written to:
+
+```text
+outputs/searchqa_blind_taxonomy_blind_v1/hierarchy_validation/
+  hierarchy_validation.md
+  hierarchy_validation.json
+  <parent>__<child>/hierarchy_result.json
+```
+
+Useful controls:
+
+```bash
+HIERARCHY_PAIRS="R_SEARCH_001:R_SEARCH_002:R_SEARCH_004 R_SEARCH_001:R_SEARCH_004:R_SEARCH_002"
+MAX_CHILD_HOLDOUT=40
+MAX_PARENT_REFERENCE=20
+REPEATS=5
+SEED=4242
+TARGET_WORKERS=128
+VLLM_MAX_NUM_SEQS=128
+```
+
+The runner checks all taxonomy type IDs, held-out members, card references, and
+duplicate card keys before using the GPU. Set
+`START_VLLM=0 QWEN_CHAT_BASE_URL=http://host:port/v1` to reuse an existing
+compatible endpoint. It only reuses the endpoint when `/models` exposes the
+configured `TARGET_MODEL`.

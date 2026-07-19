@@ -519,8 +519,9 @@ def _build_root_patch(
 ) -> dict:
     payload = [
         {
-            "node_id": child.get("mid_id") or child.get("leaf_id"),
+            "node_id": child.get("mid_id") or child.get("leaf_id") or child.get("record_id"),
             "node_level": child_level,
+            "record_id": child.get("record_id"),
             "leaf_id": child.get("leaf_id"),
             "mid_id": child.get("mid_id"),
             "leaf_ids": child.get("leaf_ids"),
@@ -563,9 +564,13 @@ def _build_root_patch(
             edit["mid_ids"] = list(dict.fromkeys([
                 *_as_clean_str_list(edit.get("mid_ids")), *source_ids,
             ]))
-        else:
+        elif child_level == "leaf":
             edit["leaf_ids"] = list(dict.fromkeys([
                 *_as_clean_str_list(edit.get("leaf_ids")), *source_ids,
+            ]))
+        else:
+            edit["record_ids"] = list(dict.fromkeys([
+                *_as_clean_str_list(edit.get("record_ids")), *source_ids,
             ]))
         edit["source_type"] = edit.get("source_type") or "failure"
         edit["support_count"] = max(_support_count(edit), support_count or 1)
@@ -872,13 +877,86 @@ def build_patchtree(
     mid_merge_workers: int = 1,
     verbose: bool = True,
 ) -> tuple[dict, dict]:
-    """Build PatchTree leaf/mid nodes and compile the root candidate."""
+    """Build a direct/leaf/mid PatchTree and compile the root candidate.
+
+    Depth 1 is the true flat ablation: typed PatchRecord edits are passed
+    directly to the Root merger without constructing Leaf or Mid nodes.
+    """
     update_mode = "patch"
     patches = list(patches)
+    tree_depth = max(int(tree_depth or 1), 1)
 
     raw_edits = _extract_edits(
         patches, update_mode, allow_open_types=allow_open_types,
     )
+    if tree_depth == 1:
+        record_patches: list[dict] = []
+        for idx, edit in enumerate(raw_edits, start=1):
+            record_ids = _as_clean_str_list(edit.get("record_ids"))
+            record_id = record_ids[0] if record_ids else f"R{idx:04d}"
+            copied = _copy_edit(edit, allow_open_types=allow_open_types)
+            copied["record_ids"] = list(dict.fromkeys([
+                *_as_clean_str_list(copied.get("record_ids")), record_id,
+            ]))
+            record_patches.append({
+                "record_id": record_id,
+                "reasoning": str(edit.get("repair_signature") or "direct PatchRecord repair"),
+                "question_type": copied.get("question_type", "other"),
+                "revision_type": copied.get("revision_type", "other"),
+                "support_count": _support_count(copied),
+                "support_sample_ids": _sample_ids(copied),
+                "shared_core": None,
+                "conditional_residuals": [],
+                "preserved_constraints": {},
+                "unresolved_conflicts": [],
+                "edits": [copied],
+            })
+        root_patch = (
+            _build_root_patch(
+                skill_content=skill_content,
+                child_patches=record_patches,
+                allow_open_types=allow_open_types,
+                child_level="record",
+            )
+            if record_patches
+            else _empty_patch(update_mode, "no typed PatchRecords")
+        )
+        if verbose:
+            print(
+                f"    [type-guided aggregate] depth=1 direct_records={len(record_patches)}"
+            )
+        artifact = {
+            "enabled": True,
+            "raw_edit_count": len(raw_edits),
+            "groups": [],
+            "kept_groups": [],
+            "dropped_groups": [],
+            "leaf_patches": [],
+            "mid_plan": {
+                "enabled": False,
+                "status": "depth_1_direct",
+                "groups": [],
+                "errors": [],
+            },
+            "mid_groups": [],
+            "mid_patches": [],
+            "tree_depth": 1,
+            "root_children_level": "record",
+            "root_child_patches": record_patches,
+            "root_patch": root_patch,
+            "settings": {
+                "min_support": min_support,
+                "max_leaf_groups": max_leaf_groups,
+                "allow_open_types": allow_open_types,
+                "group_by_cluster": False,
+                "low_support_fallback": False,
+                "tree_depth": 1,
+                "leaf_merge_workers": 0,
+                "mid_merge_workers": 0,
+            },
+        }
+        return root_patch, artifact
+
     groups = _group_edits(
         raw_edits,
         allow_open_types=allow_open_types,
@@ -910,7 +988,7 @@ def build_patchtree(
             "mid_plan": {"enabled": False, "status": "no_leaf_groups", "groups": [], "errors": []},
             "mid_groups": [],
             "mid_patches": [],
-            "tree_depth": max(int(tree_depth or 2), 2),
+            "tree_depth": tree_depth,
             "root_children_level": "leaf",
             "root_child_patches": [],
             "root_patch": _empty_patch(update_mode, "no typed leaf groups"),
@@ -953,7 +1031,6 @@ def build_patchtree(
         with ThreadPoolExecutor(max_workers=leaf_workers) as executor:
             leaf_patches = list(executor.map(build_leaf, kept_groups))
 
-    tree_depth = max(int(tree_depth or 2), 2)
     mid_groups: list[dict] = []
     mid_patches: list[dict] = []
     mid_plan: dict = {

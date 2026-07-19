@@ -6,7 +6,9 @@ from scripts.tools.validate_searchqa_blind_transfer import (
     VALIDATION_SCHEMA_VERSION,
     paired_summary,
     reusable_cached_result,
+    stratified_sample_keys,
     validation_fingerprint,
+    validation_protocol,
 )
 
 
@@ -112,3 +114,49 @@ def test_only_current_paired_schema_and_fingerprint_are_resumable():
         },
         fingerprint,
     )
+
+
+def test_holdout_cap_is_deterministically_stratified_by_split_and_outcome():
+    cards = {}
+
+    def add(split, outcome, suffix):
+        key = f"{split}::{suffix}"
+        cards[key] = {
+            "sample_key": key,
+            "split": split,
+            "outcome_status": outcome,
+        }
+        return key
+
+    keys = [
+        *(add("train", "failure", f"f{i}") for i in range(4)),
+        *(add("val", "failure", f"f{i}") for i in range(3)),
+        *(add("train", "unstable", f"u{i}") for i in range(2)),
+        add("test", "unstable", "u0"),
+    ]
+
+    selected = stratified_sample_keys(list(reversed(keys)), cards, maximum=6)
+    selected_again = stratified_sample_keys(keys, cards, maximum=6)
+
+    assert selected == selected_again
+    assert len(selected) == 6
+    assert {
+        (cards[key]["split"], cards[key]["outcome_status"])
+        for key in selected
+    } == {
+        ("train", "failure"),
+        ("val", "failure"),
+        ("train", "unstable"),
+        ("test", "unstable"),
+    }
+    # Midpoint sampling must not reproduce the global lexicographic prefix.
+    assert selected != sorted(keys)[:6]
+
+
+def test_validation_protocol_records_sample_pairing_without_seed_claim():
+    protocol = validation_protocol(repeats=5)
+
+    assert protocol["paired_by_sample"] is True
+    assert protocol["same_rollout_batch_seed_argument"] is True
+    assert protocol["generation_randomness_seed_paired"] is False
+    assert "pairing is by sample only" in protocol["seed_note"]

@@ -67,7 +67,7 @@ optimizer:
   lr_control_mode: fixed    # fixed / autonomous / none
   type_guided_min_support: 2
   type_guided_max_leaf_groups: 8
-  type_guided_tree_depth: 2   # 2 = leaf -> root; 3 = leaf -> mid -> root
+  type_guided_tree_depth: 2   # 1 = records -> root; 2 = leaf -> root; 3 = leaf -> mid -> root
   type_guided_leaf_fallback: true
   type_guided_rollout_repeats: 3
   type_guided_tau_succ: 1.0

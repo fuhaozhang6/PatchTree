@@ -173,6 +173,7 @@ TYPE_GUIDED_CLUSTER_TARGET_SIZE="${TYPE_GUIDED_CLUSTER_TARGET_SIZE:-4}"
 TYPE_GUIDED_CLUSTER_MAX_SIZE="${TYPE_GUIDED_CLUSTER_MAX_SIZE:-8}"
 TYPE_GUIDED_LEAF_MERGE_WORKERS="${TYPE_GUIDED_LEAF_MERGE_WORKERS:-4}"
 TYPE_GUIDED_MID_MERGE_WORKERS="${TYPE_GUIDED_MID_MERGE_WORKERS:-4}"
+TYPE_GUIDED_FALLBACK_EVAL_ALL_LEAVES="${TYPE_GUIDED_FALLBACK_EVAL_ALL_LEAVES:-true}"
 TYPE_GUIDED_FALLBACK_TOP_K="${TYPE_GUIDED_FALLBACK_TOP_K:-0}"
 TYPE_GUIDED_FALLBACK_TAU_CHILD="${TYPE_GUIDED_FALLBACK_TAU_CHILD:-0.0}"
 TYPE_GUIDED_FALLBACK_SEL_ENV_NUM="${TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-0}"
@@ -515,6 +516,7 @@ COMMON_ARGS=(
   --type_guided_rollout_repeats "${TYPE_GUIDED_ROLLOUT_REPEATS}"
   --type_guided_tau_succ "${TYPE_GUIDED_TAU_SUCC}"
   --type_guided_max_patch_records "${TYPE_GUIDED_MAX_PATCH_RECORDS}"
+  --type_guided_fallback_eval_all_leaves "${TYPE_GUIDED_FALLBACK_EVAL_ALL_LEAVES}"
   --type_guided_fallback_top_k "${TYPE_GUIDED_FALLBACK_TOP_K}"
   --type_guided_fallback_tau_child "${TYPE_GUIDED_FALLBACK_TAU_CHILD}"
   --type_guided_clustering "${TYPE_GUIDED_CLUSTERING}"
@@ -699,6 +701,7 @@ launch_dataset() {
       analyst_workers="${OFFICEQA_ANALYST_WORKERS:-12}"
       sel_env_num="${OFFICEQA_SEL_ENV_NUM:-0}"
       test_env_num="${OFFICEQA_TEST_ENV_NUM:-0}"
+      exec_timeout="${OFFICEQA_EXEC_TIMEOUT:-300}"
       cfg_options+=("env.data_dirs=${OFFICEQA_DOCS_DIR}")
       # OfficeQA requires document lookup over Treasury bulletin files; no-tools mode
       # often collapses to all-zero exact match on numeric/table questions.

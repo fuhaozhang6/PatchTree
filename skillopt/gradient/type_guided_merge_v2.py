@@ -837,7 +837,7 @@ def merge_type_guided_v2_records(
     artifact["settings"] = {
         **artifact.get("settings", {}),
         "version": "v2",
-        "tree_depth": max(int(tree_depth or 2), 2),
+        "tree_depth": max(int(tree_depth or 1), 1),
         "clustering_enabled": bool(clustering_enabled),
         "cluster_target_size": int(cluster_target_size),
         "cluster_max_size": int(cluster_max_size),

@@ -7,23 +7,12 @@ build/
 dist/
 site/
 
-data/*
-!data/README.md
-!data/searchqa_id_split/
-!data/searchqa_id_split/**
-!data/livemathematicianbench_id_split/
-!data/livemathematicianbench_id_split/**
-!data/docvqa_id_split/
-!data/docvqa_id_split/**
-!data/officeqa_id_split/
-!data/officeqa_id_split/**
-!data/spreadsheetbench_id_split/
-!data/spreadsheetbench_id_split/**
-!data/alfworld_path_split/
-!data/alfworld_path_split/**
+data/
+ckpt/
 outputs/
 logs/
 external/
+experiments/1
 # SkillOpt-Sleep runtime state (staging proposals, config, diagnostics, cron logs)
 .skillopt-sleep/
 

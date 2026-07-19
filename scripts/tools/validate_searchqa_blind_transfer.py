@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Validate blind SearchQA type patches on held-out members and boundaries."""
+"""Validate blind SearchQA type patches with per-sample paired A/B cohorts.
+
+The rollout ``seed`` controls the repository's repeat/batch bookkeeping.  The
+SearchQA Qwen chat backend does not currently forward it as a generation seed,
+so baseline and patched results are paired by sample, not by identical model
+randomness.
+"""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +39,7 @@ from skillopt.model import (  # noqa: E402
 from skillopt.optimizer.skill import apply_edit  # noqa: E402
 
 
-VALIDATION_SCHEMA_VERSION = "searchqa_blind_transfer_paired_v2"
+VALIDATION_SCHEMA_VERSION = "searchqa_blind_transfer_paired_v3"
 PAIR_EPSILON = 1e-12
 
 
@@ -78,6 +84,70 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def stratified_sample_keys(
+    candidate_keys: list[str],
+    cards_by_key: dict[str, dict[str, Any]],
+    maximum: int,
+) -> list[str]:
+    """Select a deterministic split x outcome-stratified sample of card keys.
+
+    When a cap applies, every available stratum is represented if the cap
+    permits it.  Remaining slots are apportioned by stratum size, and midpoint
+    selection avoids taking a lexicographic prefix within a stratum.
+    """
+    candidates = sorted({
+        str(key)
+        for key in candidate_keys
+        if str(key) in cards_by_key
+    })
+    if maximum <= 0:
+        return []
+    if len(candidates) <= maximum:
+        return candidates
+
+    buckets: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for key in candidates:
+        card = cards_by_key[key]
+        split = str(card.get("split") or key.split("::", 1)[0] or "unknown")
+        outcome = str(card.get("outcome_status") or "unknown")
+        buckets[(split, outcome)].append(key)
+
+    strata = sorted(buckets, key=lambda stratum: (-len(buckets[stratum]), stratum))
+    selected_strata = strata[:maximum]
+    allocations = {stratum: 1 for stratum in selected_strata}
+    remaining = maximum - len(selected_strata)
+    while remaining:
+        eligible = [
+            stratum
+            for stratum in selected_strata
+            if allocations[stratum] < len(buckets[stratum])
+        ]
+        if not eligible:
+            break
+        # D'Hondt-style apportionment is deterministic and tracks the observed
+        # stratum proportions while retaining the one-per-stratum guarantee.
+        best = min(
+            eligible,
+            key=lambda stratum: (
+                -len(buckets[stratum]) / (allocations[stratum] + 1),
+                stratum,
+            ),
+        )
+        allocations[best] += 1
+        remaining -= 1
+
+    selected: list[str] = []
+    for stratum in sorted(selected_strata):
+        bucket = buckets[stratum]
+        count = allocations[stratum]
+        positions = [
+            min(int((index + 0.5) * len(bucket) / count), len(bucket) - 1)
+            for index in range(count)
+        ]
+        selected.extend(bucket[index] for index in positions)
+    return selected
+
+
 def paired_summary(
     keys: list[str],
     baseline_new_q: dict[str, float],
@@ -116,6 +186,23 @@ def paired_summary(
         "unchanged": counts["unchanged"],
         "regressed": counts["regressed"],
         "pairs": pairs,
+    }
+
+
+def validation_protocol(repeats: int) -> dict[str, Any]:
+    """Describe pairing without overstating backend generation determinism."""
+    return {
+        "paired_ab": True,
+        "paired_by_sample": True,
+        "baseline_skill": "initial_skill",
+        "repeats": repeats,
+        "same_rollout_batch_seed_argument": True,
+        "generation_randomness_seed_paired": False,
+        "seed_note": (
+            "SearchQA/Qwen does not forward the rollout batch seed as "
+            "a generation seed; pairing is by sample only."
+        ),
+        "stored_card_q_i_used_for_acceptance": False,
     }
 
 
@@ -195,6 +282,7 @@ def main() -> None:
     print(f"  types:        {len(types)}")
     print(f"  sample slots: {planned} before cross-type overlap")
     print(f"  repeats:      {args.repeats}")
+    print("  pairing:      same samples; generation randomness is not seed-paired")
     print(f"  target:       {args.target_model} @ {args.target_base_url}")
     print(f"  output:       {args.output_dir}")
     print("============================================================")
@@ -248,10 +336,15 @@ def main() -> None:
     for type_index, item in enumerate(types, 1):
         type_id = str(item["type_id"])
         result_path = output_dir / type_id / "transfer_result.json"
-        holdout = [
-            key for key in (item.get("holdout_member_keys") or [])[:args.max_holdout_per_type]
+        eligible_holdout = [
+            key for key in (item.get("holdout_member_keys") or [])
             if key in items_by_key and key in cards_by_key
         ]
+        holdout = stratified_sample_keys(
+            eligible_holdout,
+            cards_by_key,
+            args.max_holdout_per_type,
+        )
         boundary = [
             key for key in (item.get("boundary_member_keys") or [])[:args.max_boundary_per_type]
             if key in items_by_key and key in cards_by_key and key not in holdout
@@ -281,7 +374,7 @@ def main() -> None:
         patched_skill = apply_edit(initial_skill, item["shared_patch"])
         baseline_new_q: dict[str, float] = {}
         patched_q: dict[str, float] = {}
-        paired_seed_by_key: dict[str, int] = {}
+        rollout_batch_seed_by_key: dict[str, int] = {}
         grouped_by_split: dict[str, list[str]] = defaultdict(list)
         for key in selected:
             grouped_by_split[key.split("::", 1)[0]].append(key)
@@ -289,7 +382,7 @@ def main() -> None:
             keys.sort()
             for start in range(0, len(keys), args.batch_size):
                 batch_keys = keys[start:start + args.batch_size]
-                paired_seed = args.seed + type_index * 1009 + start
+                rollout_batch_seed = args.seed + type_index * 1009 + start
                 chunk_root = (
                     output_dir / type_id / "paired_rollouts" / fingerprint[:16]
                     / split / f"chunk_{start // args.batch_size:04d}"
@@ -299,7 +392,7 @@ def main() -> None:
                     dataloader=dataloader,
                     items=[items_by_key[key] for key in batch_keys],
                     split=split,
-                    seed=paired_seed,
+                    seed=rollout_batch_seed,
                     repeats=args.repeats,
                     skill_content=initial_skill,
                     chunk_dir=chunk_root / "baseline_new",
@@ -309,7 +402,7 @@ def main() -> None:
                     dataloader=dataloader,
                     items=[items_by_key[key] for key in batch_keys],
                     split=split,
-                    seed=paired_seed,
+                    seed=rollout_batch_seed,
                     repeats=args.repeats,
                     skill_content=patched_skill,
                     chunk_dir=chunk_root / "patched",
@@ -328,7 +421,7 @@ def main() -> None:
                         raise RuntimeError(f"missing patched rollout group: {key}")
                     baseline_new_q[key] = _success_rate(baseline_groups[sample_id])
                     patched_q[key] = _success_rate(patched_groups[sample_id])
-                    paired_seed_by_key[key] = paired_seed
+                    rollout_batch_seed_by_key[key] = rollout_batch_seed
 
         holdout_summary = paired_summary(holdout, baseline_new_q, patched_q)
         boundary_summary = paired_summary(boundary, baseline_new_q, patched_q)
@@ -366,14 +459,8 @@ def main() -> None:
             "boundary_keys": boundary,
             "baseline_new_q_i": baseline_new_q,
             "patched_q_i": patched_q,
-            "paired_seed_by_key": paired_seed_by_key,
-            "validation_protocol": {
-                "paired_ab": True,
-                "baseline_skill": "initial_skill",
-                "repeats": args.repeats,
-                "same_batch_seed_for_baseline_and_patch": True,
-                "stored_card_q_i_used_for_acceptance": False,
-            },
+            "rollout_batch_seed_by_key": rollout_batch_seed_by_key,
+            "validation_protocol": validation_protocol(args.repeats),
         }
         write_json(result_path, result)
         validation_rows.append(result)
@@ -390,6 +477,12 @@ def main() -> None:
     write_json(output_dir / "validated_blind_revision_taxonomy.json", validated)
     lines = [
         "# SearchQA blind taxonomy transfer validation",
+        "",
+        (
+            "Baseline and patch are paired by sample. The rollout batch seed "
+            "is not forwarded as a Qwen generation seed, so model randomness "
+            "is not seed-paired."
+        ),
         "",
         "| Type | Name | Holdout (↑/= /↓) | Δ in-cluster | Boundary (↑/= /↓) | Δ boundary | Accepted |",
         "|---|---|---:|---:|---:|---:|---|",

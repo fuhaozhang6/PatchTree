@@ -1126,7 +1126,7 @@ class PatchTreeTrainer:
         type_guided_version = "v2"
         type_guided_min_support = int(cfg.get("type_guided_min_support", 2) or 2)
         type_guided_max_leaf_groups = _cfg_int(cfg, "type_guided_max_leaf_groups", 8)
-        type_guided_tree_depth = max(int(cfg.get("type_guided_tree_depth", 2) or 2), 2)
+        type_guided_tree_depth = max(int(cfg.get("type_guided_tree_depth", 2) or 2), 1)
         if type_guided_tree_depth > 3:
             print(
                 "  [type-guided] type_guided_tree_depth > 3 is not implemented yet; "

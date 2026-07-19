@@ -146,6 +146,45 @@ def test_type_guided_v2_compiles_shared_core_and_conditional_residual(monkeypatc
     assert "Verify the added qualifier explicitly." in root["edits"][1]["content"]
 
 
+def test_type_guided_v2_depth1_passes_records_directly_to_root(monkeypatch):
+    stages: list[str] = []
+
+    def fake_chat(*, stage, **kwargs):
+        stages.append(stage)
+        assert stage == "type_guided_root"
+        return _node_json(
+            content="Verify the source value before calculating.",
+            condition="a numeric answer depends on a table value",
+            source_ids=["R0001"],
+        ), {}
+
+    monkeypatch.setattr("skillopt.gradient.type_guided_merge.chat_optimizer", fake_chat)
+    root, artifact = type_guided_merge_v2.merge_type_guided_v2_records(
+        skill_content="",
+        patch_records=[{
+            "record_id": "R0001",
+            "question_type": "derived_numeric_answer",
+            "revision_type": "operand_verification",
+            "repair_signature": "verify source operands",
+            "condition": "a numeric answer depends on a table value",
+            "boundary": "",
+            "patch": {"op": "append", "content": "Verify the source value."},
+        }],
+        min_support=1,
+        tree_depth=1,
+        clustering_enabled=False,
+        verbose=False,
+    )
+
+    assert stages == ["type_guided_root"]
+    assert artifact["tree_depth"] == 1
+    assert artifact["root_children_level"] == "record"
+    assert artifact["leaf_patches"] == []
+    assert artifact["mid_patches"] == []
+    assert artifact["root_child_patches"][0]["record_id"] == "R0001"
+    assert root["edits"]
+
+
 def test_type_guided_v2_cluster_type_propagates_to_leaf(monkeypatch):
     def fake_chat(*, stage, **kwargs):
         if stage == "type_guided_cluster":
