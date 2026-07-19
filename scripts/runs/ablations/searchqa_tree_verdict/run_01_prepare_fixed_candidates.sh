@@ -12,7 +12,7 @@ export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 DRY_RUN="${DRY_RUN:-0}"
 
-SOURCE_RUN="${SOURCE_RUN:-/ai-app-vepfs/zhangfuhao/skill/SkillOpt-Tree/outputs/searchqa_tree_shape_d3_clustering_on_min_support1_all_clusters_tail_off_fallback_off_seed42_20260718_165434/searchqa}"
+SOURCE_RUN="${SOURCE_RUN:-${PROJECT_ROOT}/outputs/searchqa_tree_shape_d3_clustering_on_min_support1_all_clusters_tail_off_fallback_off_seed42_20260718_165434/searchqa}"
 REPLAY_DIR="${REPLAY_DIR:-${PROJECT_ROOT}/outputs/searchqa_tree_verdict_p6_fixed}"
 MAIN_STEP="${MAIN_STEP:-auto}"
 FALLBACK_STEP="${FALLBACK_STEP:-auto}"

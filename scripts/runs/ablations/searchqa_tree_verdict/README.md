@@ -36,7 +36,7 @@ another pair. Use the existing candidates.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-REPLAY_DIR=/ai-app-vepfs/zhangfuhao/skill/SkillOpt-Tree/outputs/searchqa_tree_verdict_p6_fixed \
+REPLAY_DIR=/ai-app-vepfs/zhangfuhao/skill/PatchTree/outputs/searchqa_tree_verdict_p6_fixed \
 bash scripts/runs/ablations/searchqa_tree_verdict/run_02_eval_one_gpu.sh
 ```
 

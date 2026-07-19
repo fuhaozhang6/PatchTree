@@ -43,7 +43,7 @@ val/test 样本和同一个 target 进程。
 固定证据源：
 
 ```text
-/ai-app-vepfs/zhangfuhao/skill/SkillOpt-Tree/outputs/
+/ai-app-vepfs/zhangfuhao/skill/PatchTree/outputs/
 searchqa_tree_shape_d3_clustering_on_min_support1_all_clusters_tail_off_fallback_off_seed42_20260718_165434/
 searchqa/
 ```
