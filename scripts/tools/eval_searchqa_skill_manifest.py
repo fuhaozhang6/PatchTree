@@ -75,6 +75,33 @@ def _git_commit() -> str:
         return ""
 
 
+def _resolve_manifest_skill_path(manifest_path: Path, raw_path: str) -> Path:
+    """Resolve portable manifests and rebase legacy absolute paths after moves."""
+    supplied = Path(raw_path).expanduser()
+    if not supplied.is_absolute():
+        return (manifest_path.parent / supplied).resolve()
+    if supplied.is_file():
+        return supplied.resolve()
+
+    # Older replay manifests stored absolute paths. If the replay directory was
+    # copied or renamed, anchor the suffix at the deepest matching directory
+    # name in the manifest's current location.
+    supplied_parts = supplied.parts
+    for anchor in (manifest_path.parent, *manifest_path.parents):
+        if not anchor.name:
+            continue
+        matching = [
+            index
+            for index, part in enumerate(supplied_parts)
+            if part == anchor.name
+        ]
+        for index in reversed(matching):
+            candidate = anchor.joinpath(*supplied_parts[index + 1 :])
+            if candidate.is_file():
+                return candidate.resolve()
+    return supplied
+
+
 def _manifest_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file, delimiter="\t"))
@@ -90,7 +117,10 @@ def _manifest_rows(path: Path) -> list[dict[str, str]]:
         if not name or not skill or name in seen:
             raise ValueError(f"invalid/duplicate manifest row: {row}")
         seen.add(name)
-        normalized.append({"run_name": name, "skill_path": skill})
+        normalized.append({
+            "run_name": name,
+            "skill_path": str(_resolve_manifest_skill_path(path, skill)),
+        })
     return normalized
 
 

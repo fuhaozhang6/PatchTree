@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 from scripts.tools.analyze_searchqa_tree_verdict import compare
-from scripts.tools.eval_searchqa_skill_manifest import _validate_results
+from scripts.tools.eval_searchqa_skill_manifest import (
+    _manifest_rows,
+    _validate_results,
+)
 from scripts.tools.prepare_searchqa_tree_verdict import (
     audit_run,
     choose_fallback_step,
@@ -140,3 +143,24 @@ def test_paired_comparison_counts_fixed_and_broken():
     assert result["delta_correct"] == 0
     assert result["fixed_ids"] == ["a"]
     assert result["broken_ids"] == ["b"]
+
+
+def test_manifest_rebases_legacy_absolute_path_after_replay_move(tmp_path):
+    replay = tmp_path / "new_checkout" / "outputs" / "frozen_replay"
+    skill = replay / "main" / "g0_parent" / "candidate_skill.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("portable", encoding="utf-8")
+    manifest = replay / "main" / "skill_manifest.tsv"
+    manifest.write_text(
+        "run_name\tskill_path\n"
+        "g0_parent\t/old/checkout/outputs/frozen_replay/"
+        "main/g0_parent/candidate_skill.md\n",
+        encoding="utf-8",
+    )
+
+    rows = _manifest_rows(manifest)
+
+    assert rows == [{
+        "run_name": "g0_parent",
+        "skill_path": str(skill.resolve()),
+    }]

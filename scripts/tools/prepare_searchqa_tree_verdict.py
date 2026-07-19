@@ -345,7 +345,12 @@ def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:
             fieldnames=["run_name", "skill_path"],
         )
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            skill_path = Path(row["skill_path"]).resolve()
+            writer.writerow({
+                "run_name": row["run_name"],
+                "skill_path": os.path.relpath(skill_path, path.parent.resolve()),
+            })
 
 
 def _prepare_topdown(

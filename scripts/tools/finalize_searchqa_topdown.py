@@ -453,7 +453,7 @@ def finalize_topdown(
         writer.writeheader()
         writer.writerow({
             "run_name": "td_combo",
-            "skill_path": str(combination_skill_path),
+            "skill_path": combination_skill_path.name,
         })
 
     all_kept_have_unique = bool(kept_ids) and all(

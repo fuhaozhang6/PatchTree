@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -99,20 +100,18 @@ def main() -> None:
                 fieldnames=["run_name", "skill_path"],
             )
             writer.writeheader()
-            writer.writerows([
-                {
-                    "run_name": "td_parent",
-                    "skill_path": report["inputs"]["parent_skill"]["path"],
-                },
-                {
-                    "run_name": "td_root",
-                    "skill_path": report["inputs"]["root_skill"]["path"],
-                },
-                {
-                    "run_name": "td_combo",
-                    "skill_path": report["combination"]["candidate_skill_path"],
-                },
-            ])
+            for run_name, skill_path in (
+                ("td_parent", report["inputs"]["parent_skill"]["path"]),
+                ("td_root", report["inputs"]["root_skill"]["path"]),
+                ("td_combo", report["combination"]["candidate_skill_path"]),
+            ):
+                writer.writerow({
+                    "run_name": run_name,
+                    "skill_path": os.path.relpath(
+                        Path(skill_path).resolve(),
+                        manifest_path.parent.resolve(),
+                    ),
+                })
         print(f"[ready] {manifest_path}")
         raise SystemExit(0)
     print(f"[skip-test] top-down gate failed: {gate_report}")
