@@ -2,7 +2,7 @@ import json
 
 from skillopt.config import flatten_config
 from skillopt.engine import trainer
-from skillopt.gradient import type_guided_merge_v2
+from skillopt.gradient import type_guided_merge, type_guided_merge_v2
 
 
 def _node_json(*, content: str, condition: str, source_ids: list[str]) -> str:
@@ -422,6 +422,78 @@ def test_dynamic_tree_conservative_root_integrates_without_global_core(monkeypat
     assert root["edits"][0]["source_child_ids"] == ["L1", "L2"]
     assert "When either bounded condition holds" in root["edits"][0]["content"]
     json.dumps(artifact)
+
+
+def test_conservative_root_respects_hard_max_tree_depth(monkeypatch):
+    plan_calls = 0
+
+    def partial_plan(**kwargs):
+        nonlocal plan_calls
+        plan_calls += 1
+        frontier = kwargs["frontier"]
+        child_ids = [
+            type_guided_merge._node_id(node)
+            for node in frontier[:2]
+        ]
+        return ([{
+            "mid_id": f"N{plan_calls}",
+            "child_ids": child_ids,
+        }], {"status": "partial"})
+
+    def fake_mid(**kwargs):
+        return {
+            "reasoning": "merge one compatible pair",
+            "shared_core": {"condition": "", "patch": {
+                "op": "append",
+                "content": "Apply the pair repair.",
+            }},
+            "conditional_residuals": [],
+            "preserved_constraints": {},
+            "unresolved_conflicts": [],
+            "edits": [{"op": "append", "content": "Apply the pair repair."}],
+        }
+
+    def fake_conservative_root(**kwargs):
+        return {
+            "reasoning": "preserve the frontier",
+            "shared_core": None,
+            "conditional_residuals": [],
+            "preserved_constraints": {},
+            "unresolved_conflicts": [],
+            "edits": [{"op": "append", "content": "Preserve frontier repairs."}],
+        }
+
+    monkeypatch.setattr(
+        type_guided_merge, "_dynamic_frontier_groups", partial_plan,
+    )
+    monkeypatch.setattr(type_guided_merge, "_build_mid_patch", fake_mid)
+    monkeypatch.setattr(
+        type_guided_merge,
+        "_build_conservative_root_patch",
+        fake_conservative_root,
+    )
+    leaves = [
+        {
+            "leaf_id": f"L{idx}",
+            "edits": [{"op": "append", "content": f"Repair {idx}."}],
+        }
+        for idx in range(1, 9)
+    ]
+
+    _root, hierarchy = type_guided_merge._build_dynamic_hierarchy(
+        skill_content="",
+        leaf_patches=leaves,
+        max_tree_depth=4,
+        target_children=3,
+        max_children=4,
+        top_mode="conservative_root",
+        allow_open_types=True,
+        merge_workers=1,
+        verbose=False,
+    )
+
+    assert hierarchy["actual_tree_depth"] == 4
+    assert hierarchy["actual_tree_depth"] <= hierarchy["max_tree_depth"]
 
 
 def test_type_guided_v2_cluster_type_propagates_to_leaf(monkeypatch):

@@ -47,6 +47,18 @@ def test_generic_fallback_config_flattens_from_optimizer_section():
     assert flat["type_guided_fallback_allow_leaf"] is False
 
 
+def test_legacy_fallback_override_updates_canonical_key():
+    flat = flatten_config({
+        "optimizer": {
+            "type_guided_fallback_enabled": True,
+            "type_guided_leaf_fallback": False,
+        }
+    })
+
+    assert flat["type_guided_leaf_fallback"] is False
+    assert flat["type_guided_fallback_enabled"] is False
+
+
 def test_type_guided_merge_fallback_builds_leaf_and_root(monkeypatch):
     def fail_chat(*args, **kwargs):
         raise RuntimeError("optimizer unavailable")
@@ -332,6 +344,41 @@ def test_concat_strategy_skips_root_fusion(monkeypatch):
     assert artifact["hierarchy"]["builder"] == "concat"
     assert artifact["settings"]["merge_strategy"] == "concat"
     assert [edit["content"] for edit in root["edits"]] == ["Repair A.", "Repair B."]
+
+
+def test_depth_one_concat_skips_direct_root_fusion(monkeypatch):
+    stages: list[str] = []
+
+    def fake_chat(*, stage, **kwargs):
+        stages.append(stage)
+        raise AssertionError("concat must not call the optimizer")
+
+    monkeypatch.setattr(type_guided_merge, "chat_optimizer", fake_chat)
+    patch = {
+        "edits": [{
+            "op": "append",
+            "content": "Keep the direct repair.",
+            "question_type": "math",
+            "revision_type": "verify",
+            "support_count": 1,
+        }]
+    }
+
+    root, artifact = type_guided_merge.build_patchtree(
+        "",
+        [patch],
+        min_support=1,
+        tree_depth=1,
+        merge_strategy="concat",
+        allow_open_types=True,
+        verbose=False,
+    )
+
+    assert stages == []
+    assert artifact["settings"]["merge_strategy"] == "concat"
+    assert [edit["content"] for edit in root["edits"]] == [
+        "Keep the direct repair.",
+    ]
 
 
 def test_random_grouping_is_deterministic_and_size_matched(monkeypatch):

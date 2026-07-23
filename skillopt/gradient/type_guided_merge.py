@@ -1254,7 +1254,20 @@ def _build_dynamic_hierarchy(
 
     level_reports: list[dict] = []
     internal_nodes: list[dict] = []
-    max_merge_levels = max(max(int(max_tree_depth), 2) - 1, 1)
+    requested_top_mode = str(top_mode or "auto").strip().lower()
+    if requested_top_mode not in {
+        "auto", "real_root", "virtual_root", "conservative_root",
+    }:
+        requested_top_mode = "auto"
+    normalized_max_depth = max(int(max_tree_depth), 2)
+    # Leaves occupy level 1. A conservative executable root always needs one
+    # additional level, so reserve that level up front. Other top modes either
+    # converge to one existing node or become a non-executable virtual root.
+    reserved_root_levels = int(requested_top_mode == "conservative_root")
+    max_merge_levels = max(
+        normalized_max_depth - 1 - reserved_root_levels,
+        0,
+    )
     for level in range(1, max_merge_levels + 1):
         if len(frontier) <= 1:
             break
@@ -1333,11 +1346,6 @@ def _build_dynamic_hierarchy(
             )
 
     top_nodes = frontier
-    requested_top_mode = str(top_mode or "auto").strip().lower()
-    if requested_top_mode not in {
-        "auto", "real_root", "virtual_root", "conservative_root",
-    }:
-        requested_top_mode = "auto"
     resolved_top_mode = "real_root" if len(top_nodes) == 1 else requested_top_mode
     root_patch: dict
     real_root_attempt: dict | None = None
@@ -1444,7 +1452,7 @@ def _build_dynamic_hierarchy(
         "internal_nodes": internal_nodes,
         "real_root_attempt": real_root_attempt,
         "conservative_root_attempt": conservative_root_attempt,
-        "max_tree_depth": max_tree_depth,
+        "max_tree_depth": normalized_max_depth,
         "actual_tree_depth": len(levels) + int("ROOT" in node_by_id),
         "target_children": target_children,
         "max_children": max_children,
@@ -1517,16 +1525,24 @@ def build_patchtree(
                 "unresolved_conflicts": [],
                 "edits": [copied],
             })
-        root_patch = (
-            _build_root_patch(
+        if not record_patches:
+            root_patch = _empty_patch(update_mode, "no typed PatchRecords")
+        elif merge_strategy == "concat":
+            root_patch = _fallback_parent_patch(
+                record_patches,
+                allow_open_types=allow_open_types,
+                reasoning=(
+                    "concat ablation: preserve direct PatchRecord edits "
+                    "without root fusion"
+                ),
+            )
+        else:
+            root_patch = _build_root_patch(
                 skill_content=skill_content,
                 child_patches=record_patches,
                 allow_open_types=allow_open_types,
                 child_level="record",
             )
-            if record_patches
-            else _empty_patch(update_mode, "no typed PatchRecords")
-        )
         if verbose:
             print(
                 f"    [type-guided aggregate] depth=1 direct_records={len(record_patches)}"

@@ -59,17 +59,27 @@ The defaults are:
 
 ```text
 four simultaneous training processes
-48 optimizer analyst workers per process (theoretical total 192)
-24 PatchRecord workers per process
-96 target workers per GPU
+48 generic optimizer analyst workers per process (ceiling 192)
+24 PatchRecord workers per process (normal V2 peak 96)
+128 target workers per GPU
 128 vLLM maximum sequences per GPU
 ```
 
 If two four-GPU custom tasks must run simultaneously, set
-`ANALYST_WORKERS=24` in both tasks. `API_MAX_CONCURRENCY` is a per-process
-sanity ceiling, not an account-wide semaphore.
+`ANALYST_WORKERS=24 PATCH_RECORD_WORKERS=16` in both tasks.
+`API_MAX_CONCURRENCY` is a per-process sanity ceiling, not an account-wide
+semaphore. Target workers use the local H20 and do not consume DeepSeek API
+concurrency. `max-num-seqs=128` is a scheduling ceiling; effective throughput
+still depends on output length, batched-token capacity, and available KV cache.
 
-Successful cases create `.suite_complete` below their output directory.
+The `rollout_r2` / default R4 / `rollout_r8` arms are rollout-sampling
+sensitivity experiments. Because the empirical success-rate grid changes with
+R under the fixed `tau_succ=0.5`, they should not be described as pure
+compute-only ablations. The batch-size arms share `max_patch_records=35`, so the
+35-sample arm is not uniquely truncated.
+
+Successful cases create `.suite_complete` only after `summary.json` and test
+results pass a result-integrity guard. Set `RESULT_GUARD=0` only for diagnosis.
 Rerunning the same seed skips completed cases and lets the trainer resume
 partially completed cases. `FORCE_RERUN=1` bypasses only the suite marker; the
 trainer's own resume state still applies. Use a new `RUN_TAG` when a completely

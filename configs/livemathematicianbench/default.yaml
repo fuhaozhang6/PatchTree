@@ -12,7 +12,7 @@ optimizer:
   type_guided_min_support: 1
   type_guided_max_leaf_groups: 8
   type_guided_tree_builder: recursive
-  type_guided_max_tree_depth: 4
+  type_guided_max_tree_depth: 4  # leaf -> up to two internal levels -> root
   type_guided_merge_target_children: 3
   type_guided_merge_max_children: 4
   type_guided_merge_strategy: hierarchical

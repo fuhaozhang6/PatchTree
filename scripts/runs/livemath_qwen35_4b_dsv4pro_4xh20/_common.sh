@@ -61,9 +61,9 @@ export OPTIMIZER_AZURE_OPENAI_ENDPOINT="${DEEPSEEK_BASE_URL}"
 export OPTIMIZER_AZURE_OPENAI_API_KEY="${DEEPSEEK_API_KEY}"
 export OPTIMIZER_AZURE_OPENAI_AUTH_MODE=openai_compatible
 export OPTIMIZER_AZURE_OPENAI_API_VERSION=openai-compat
-export DEEPSEEK_THINKING="${DEEPSEEK_THINKING:-enabled}"
+export DEEPSEEK_THINKING="${DEEPSEEK_THINKING:-disabled}"
 export DEEPSEEK_OFFICIAL_THINKING="${DEEPSEEK_OFFICIAL_THINKING:-${DEEPSEEK_THINKING}}"
-export REASONING_EFFORT="${REASONING_EFFORT:-high}"
+export REASONING_EFFORT="${REASONING_EFFORT:-}"
 
 export LIVEMATH_SPLIT_DIR="${LIVEMATH_SPLIT_DIR:-${PROJECT_ROOT}/data/livemathematicianbench_split}"
 export INITIAL_SKILL_PATH="${INITIAL_SKILL_PATH:-${PROJECT_ROOT}/skillopt/envs/livemathematicianbench/skills/initial.md}"
@@ -78,9 +78,11 @@ export TEST_ENV_NUM="${TEST_ENV_NUM:-0}"
 export EVAL_TEST="${EVAL_TEST:-true}"
 export LIMIT="${LIMIT:-0}"
 
-# One process per GPU. Four simultaneous cases use at most 4*48=192 optimizer
-# analyst calls, below the official account-wide limit of 256.
-export TARGET_WORKERS="${TARGET_WORKERS:-96}"
+# One process per GPU. Target concurrency belongs to the local vLLM server;
+# optimizer concurrency belongs to the DeepSeek account and is counted
+# separately. Four processes have a generic analyst ceiling of 4*48=192, while
+# the V2 PatchRecord stage normally uses 4*24=96 optimizer calls.
+export TARGET_WORKERS="${TARGET_WORKERS:-128}"
 export ANALYST_WORKERS="${ANALYST_WORKERS:-48}"
 export PATCH_RECORD_WORKERS="${PATCH_RECORD_WORKERS:-24}"
 export LEAF_MERGE_WORKERS="${LEAF_MERGE_WORKERS:-4}"
@@ -104,6 +106,7 @@ export DRY_RUN="${DRY_RUN:-0}"
 export FORCE_RERUN="${FORCE_RERUN:-0}"
 export KEEP_GOING="${KEEP_GOING:-1}"
 export SMOKE="${SMOKE:-0}"
+export RESULT_GUARD="${RESULT_GUARD:-1}"
 
 export RUN_TAG="${RUN_TAG:-livemath_qwen35_4b_dsv4pro_4xh20}"
 export SUITE_ROOT="${SUITE_ROOT:-${PROJECT_ROOT}/outputs/${RUN_TAG}}"
@@ -126,3 +129,116 @@ fi
   || suite_fail "TARGET_WORKERS is larger than both configured concurrency ceilings"
 (( ANALYST_WORKERS <= API_MAX_CONCURRENCY )) \
   || suite_fail "ANALYST_WORKERS exceeds per-process API_MAX_CONCURRENCY"
+(( PATCH_RECORD_WORKERS <= API_MAX_CONCURRENCY )) \
+  || suite_fail "PATCH_RECORD_WORKERS exceeds per-process API_MAX_CONCURRENCY"
+
+suite_guard_case_results() {
+  local case_name="$1"
+  local output_dir="$2"
+  if ! suite_truthy "${RESULT_GUARD}"; then
+    return 0
+  fi
+
+  "${PYTHON_BIN}" - "${case_name}" "${output_dir}" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+case_name = sys.argv[1]
+root = sys.argv[2]
+summary_path = os.path.join(root, "summary.json")
+if not os.path.isfile(summary_path):
+    raise SystemExit(f"[guard:fatal] case={case_name} missing {summary_path}")
+
+try:
+    with open(summary_path, encoding="utf-8") as handle:
+        summary = json.load(handle)
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(
+        f"[guard:fatal] case={case_name} invalid summary.json: {exc}"
+    )
+
+for key in ("baseline_test_hard", "test_hard"):
+    if not isinstance(summary.get(key), (int, float)):
+        raise SystemExit(
+            f"[guard:fatal] case={case_name} summary field {key!r} "
+            f"is not numeric: {summary.get(key)!r}"
+        )
+
+paths = []
+for dirpath, _, filenames in os.walk(root):
+    if "results.jsonl" in filenames and (
+        "test_eval" in os.path.relpath(dirpath, root).split(os.sep)
+        or os.path.basename(dirpath).startswith("test_eval")
+    ):
+        paths.append(os.path.join(dirpath, "results.jsonl"))
+
+rows = []
+for path in paths:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        continue
+
+if not rows:
+    raise SystemExit(
+        f"[guard:fatal] case={case_name} has no readable test results.jsonl"
+    )
+
+failure_terms = (
+    "call failed",
+    "connection refused",
+    "timed out",
+    "timeout",
+    "task-timeout",
+    "api request failed",
+    "http 401",
+    "http 402",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "no choices",
+    "non-json response",
+    "empty message",
+)
+failish = []
+for row in rows:
+    text = " ".join(
+        str(row.get(key, ""))
+        for key in (
+            "fail_reason",
+            "error",
+            "phase",
+            "response",
+            "last_finish_reason",
+        )
+    ).lower()
+    if any(term in text for term in failure_terms):
+        failish.append(row)
+
+if len(failish) / len(rows) >= 0.5:
+    raise SystemExit(
+        f"[guard:fatal] case={case_name} suspicious test results: "
+        f"records={len(rows)} failish={len(failish)}"
+    )
+
+print(
+    f"[guard] case={case_name} summary=ok "
+    f"test_records={len(rows)} failish={len(failish)}"
+)
+PY
+}

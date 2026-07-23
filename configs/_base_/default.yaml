@@ -69,7 +69,7 @@ optimizer:
   type_guided_max_leaf_groups: 8
   type_guided_tree_depth: 2   # 1 = records -> root; 2 = leaf -> root; 3 = leaf -> mid -> root
   type_guided_tree_builder: recursive  # recursive / fixed
-  type_guided_max_tree_depth: 4
+  type_guided_max_tree_depth: 4  # hard cap including the leaf level and executable root
   type_guided_merge_target_children: 3
   type_guided_merge_max_children: 4
   type_guided_merge_strategy: hierarchical  # hierarchical / concat / flat_fuse

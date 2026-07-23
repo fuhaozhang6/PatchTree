@@ -239,6 +239,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--type_guided_grouping_seed", type=int)
     p.add_argument("--type_guided_top_mode", type=str,
                    choices=["auto", "real_root", "virtual_root", "conservative_root"])
+    p.add_argument("--type_guided_fallback_enabled", type=_BOOL)
     p.add_argument("--type_guided_leaf_fallback", type=_BOOL)
     p.add_argument("--type_guided_rollout_repeats", type=int)
     p.add_argument("--type_guided_tau_succ", type=float)
@@ -380,6 +381,7 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "type_guided_grouping_mode": "optimizer.type_guided_grouping_mode",
     "type_guided_grouping_seed": "optimizer.type_guided_grouping_seed",
     "type_guided_top_mode": "optimizer.type_guided_top_mode",
+    "type_guided_fallback_enabled": "optimizer.type_guided_fallback_enabled",
     "type_guided_leaf_fallback": "optimizer.type_guided_leaf_fallback",
     "type_guided_rollout_repeats": "optimizer.type_guided_rollout_repeats",
     "type_guided_tau_succ": "optimizer.type_guided_tau_succ",

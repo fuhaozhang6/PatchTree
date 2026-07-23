@@ -232,6 +232,19 @@ def flatten_config(cfg: dict) -> dict:
         if isinstance(section_dict, dict) and key in section_dict:
             flat[flat_key] = section_dict[key]
 
+    # Canonicalize the deprecated leaf-only fallback switch. Structured configs
+    # inherit the new generic default, so an explicit legacy override must also
+    # update the canonical key instead of being silently shadowed by that base
+    # value. Keep the legacy flat key for external readers during migration.
+    optimizer_section = cfg.get("optimizer", {})
+    if (
+        isinstance(optimizer_section, dict)
+        and "type_guided_leaf_fallback" in optimizer_section
+    ):
+        flat["type_guided_fallback_enabled"] = optimizer_section[
+            "type_guided_leaf_fallback"
+        ]
+
     # Pass through env-specific keys not in the explicit mapping
     env_section = cfg.get("env", {})
     if isinstance(env_section, dict):

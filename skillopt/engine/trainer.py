@@ -1226,17 +1226,19 @@ class PatchTreeTrainer:
             "auto", "real_root", "virtual_root", "conservative_root",
         }:
             type_guided_top_mode = "auto"
-        # Backward compatibility: legacy flat configs may still provide the old
-        # leaf-specific name. The base config no longer emits it, so presence
-        # here means the caller intentionally used the compatibility alias.
-        if "type_guided_leaf_fallback" in cfg:
+        # Prefer the canonical generic switch. Structured legacy overrides are
+        # normalized to this key by flatten_config; the old flat key remains a
+        # last-resort compatibility path for directly supplied flat configs.
+        if "type_guided_fallback_enabled" in cfg:
+            type_guided_fallback_enabled = bool(
+                cfg.get("type_guided_fallback_enabled")
+            )
+        elif "type_guided_leaf_fallback" in cfg:
             type_guided_fallback_enabled = bool(
                 cfg.get("type_guided_leaf_fallback")
             )
         else:
-            type_guided_fallback_enabled = bool(
-                cfg.get("type_guided_fallback_enabled", True)
-            )
+            type_guided_fallback_enabled = True
         type_guided_fallback_max_hops = int(
             cfg.get("type_guided_fallback_max_hops", -1)
         )
@@ -3102,9 +3104,18 @@ class PatchTreeTrainer:
             print(f"  Test items: {test_n2}")
             test_dir = os.path.join(out_root, "test_eval")
             os.makedirs(test_dir, exist_ok=True)
-            test_results = adapter.rollout(test_env2, best_skill, test_dir)
-            test_hard, test_soft = compute_score(test_results)
-            best_buckets = _compute_task_type_buckets(test_results, task_types)
+            if skill_hash(best_skill) == skill_hash(skill_init):
+                # No-training baselines and runs with no accepted update would
+                # otherwise evaluate the identical prompt twice. Reuse the first
+                # test rollout so stochastic decoding cannot create a fake delta.
+                test_results = baseline_test_results
+                test_hard, test_soft = baseline_test_hard, baseline_test_soft
+                best_buckets = baseline_buckets
+                print("  [best skill == initial skill] reuse baseline test rollout")
+            else:
+                test_results = adapter.rollout(test_env2, best_skill, test_dir)
+                test_hard, test_soft = compute_score(test_results)
+                best_buckets = _compute_task_type_buckets(test_results, task_types)
             print("\n  === Best Skill Test Results ===")
             for task_type in task_types + ["overall"]:
                 b = best_buckets.get(task_type, {"total": 0, "hard": 0})

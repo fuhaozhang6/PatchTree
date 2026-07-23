@@ -36,9 +36,10 @@ case_cfg+=(
   "optimizer.type_guided_validation_budget=16"
   "optimizer.type_guided_fallback_sel_env_num=12"
   "optimizer.type_guided_fallback_reconcile=llm_fuse"
-  "optimizer.type_guided_rollout_repeats=${case_repeats}"
   "optimizer.type_guided_tau_succ=0.5"
-  "optimizer.type_guided_max_patch_records=24"
+  # Keep this at least as large as the largest batch-size arm so batch_35 does
+  # not silently change the candidate set through PatchRecord truncation.
+  "optimizer.type_guided_max_patch_records=35"
   "optimizer.type_guided_patch_record_workers=${PATCH_RECORD_WORKERS}"
   "optimizer.type_guided_leaf_merge_workers=${LEAF_MERGE_WORKERS}"
   "optimizer.type_guided_mid_merge_workers=${MID_MERGE_WORKERS}"
@@ -185,9 +186,15 @@ set +e
 status=${PIPESTATUS[0]}
 set -e
 if [[ "${status}" -eq 0 ]]; then
-  touch "${done_marker}"
-  echo "[done] seed=${SEED} queue=${QUEUE_ID} case=${CASE_NAME}"
-else
+  if suite_guard_case_results "${CASE_NAME}" "${case_out}"; then
+    touch "${done_marker}"
+    echo "[done] seed=${SEED} queue=${QUEUE_ID} case=${CASE_NAME}"
+  else
+    status=$?
+    echo "[failed] result guard rejected seed=${SEED} queue=${QUEUE_ID} case=${CASE_NAME}" >&2
+  fi
+fi
+if [[ "${status}" -ne 0 ]]; then
   echo "[failed] seed=${SEED} queue=${QUEUE_ID} case=${CASE_NAME} status=${status}" >&2
 fi
 exit "${status}"
