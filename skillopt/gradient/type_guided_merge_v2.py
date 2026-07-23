@@ -394,6 +394,8 @@ def generate_patch_records(
                 record, report = fut.result()
                 reports.append(report)
                 if record and not record.get("no_patch"):
+                    record["evidence_success_rate"] = float(_q_i)
+                    record["evidence_status"] = str(_status)
                     record["_source_order"] = sample_id
                     records.append(record)
                 elif record and record.get("no_patch"):
@@ -449,6 +451,10 @@ def _record_to_failure_patch(record: dict) -> dict:
     edit["condition"] = record.get("condition", "")
     edit["applicability"] = record.get("condition", "")
     edit["boundary"] = record.get("boundary", "")
+    edit["evidence_success_rate"] = float(
+        record.get("evidence_success_rate", 0.0) or 0.0
+    )
+    edit["evidence_status"] = str(record.get("evidence_status") or "failure")
     if record.get("cluster_id"):
         edit["cluster_id"] = record.get("cluster_id")
         edit["cluster_label"] = record.get("cluster_label", "")
@@ -814,6 +820,9 @@ def merge_type_guided_v2_records(
     max_tree_depth: int = 4,
     merge_target_children: int = 3,
     merge_max_children: int = 4,
+    merge_strategy: str = "hierarchical",
+    grouping_mode: str = "type",
+    grouping_seed: int = 0,
     top_mode: str = "auto",
     clustering_enabled: bool = False,
     cluster_target_size: int = 6,
@@ -848,6 +857,9 @@ def merge_type_guided_v2_records(
         max_tree_depth=max_tree_depth,
         merge_target_children=merge_target_children,
         merge_max_children=merge_max_children,
+        merge_strategy=merge_strategy,
+        grouping_mode=grouping_mode,
+        grouping_seed=grouping_seed,
         top_mode=top_mode,
         leaf_merge_workers=leaf_merge_workers,
         mid_merge_workers=mid_merge_workers,
@@ -864,6 +876,9 @@ def merge_type_guided_v2_records(
         "max_tree_depth": int(max_tree_depth),
         "merge_target_children": int(merge_target_children),
         "merge_max_children": int(merge_max_children),
+        "merge_strategy": str(merge_strategy or "hierarchical"),
+        "grouping_mode": str(grouping_mode or "type"),
+        "grouping_seed": int(grouping_seed),
         "top_mode": str(top_mode or "auto"),
         "clustering_enabled": bool(clustering_enabled),
         "cluster_target_size": int(cluster_target_size),

@@ -2,12 +2,35 @@ _base_: ../_base_/default.yaml
 
 train:
   train_size: 0
-  batch_size: 40
+  batch_size: 18
   accumulation: 1
 
 optimizer:
   learning_rate: 999
+  min_learning_rate: 999
+  lr_scheduler: constant
+  type_guided_min_support: 1
+  type_guided_max_leaf_groups: 8
+  type_guided_tree_builder: recursive
+  type_guided_max_tree_depth: 4
+  type_guided_merge_target_children: 3
+  type_guided_merge_max_children: 4
+  type_guided_merge_strategy: hierarchical
+  type_guided_grouping_mode: type
+  type_guided_grouping_seed: -1
+  type_guided_top_mode: conservative_root
+  type_guided_fallback_enabled: true
+  type_guided_fallback_max_hops: -1
+  type_guided_fallback_allow_leaf: true
+  type_guided_fallback_min_leaf_coverage: 1
+  type_guided_validation_budget: 16
   type_guided_fallback_sel_env_num: 12
+  type_guided_fallback_reconcile: llm_fuse
+  type_guided_rollout_repeats: 4
+  type_guided_tau_succ: 0.5
+  type_guided_max_patch_records: 24
+  type_guided_clustering: false
+  type_guided_tail_bank: false
 
 env:
   name: livemathematicianbench

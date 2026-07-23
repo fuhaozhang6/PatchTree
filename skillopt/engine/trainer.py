@@ -163,6 +163,25 @@ def _recursive_fallback_children(
     ]
 
 
+def _fallback_node_skip_reason(
+    node: dict,
+    *,
+    fallback_hop: int,
+    max_hops: int,
+    allow_leaf: bool,
+) -> str:
+    """Return why a fallback node is ineligible, or an empty string."""
+    if max_hops >= 0 and fallback_hop > max_hops:
+        return "beyond_max_hops"
+    child_level = str(
+        node.get("node_level")
+        or ("mid" if node.get("mid_id") else "leaf")
+    )
+    if child_level == "leaf" and not allow_leaf:
+        return "leaf_fallback_disabled"
+    return ""
+
+
 def _append_jsonl(path: str, rows: list[dict]) -> None:
     if not rows:
         return
@@ -1180,13 +1199,51 @@ class PatchTreeTrainer:
             int(cfg.get("type_guided_merge_max_children", 4) or 4),
             type_guided_merge_target_children,
         )
+        type_guided_merge_strategy = str(
+            cfg.get("type_guided_merge_strategy", "hierarchical")
+            or "hierarchical"
+        ).strip().lower()
+        if type_guided_merge_strategy not in {
+            "hierarchical", "concat", "flat_fuse",
+        }:
+            type_guided_merge_strategy = "hierarchical"
+        type_guided_grouping_mode = str(
+            cfg.get("type_guided_grouping_mode", "type") or "type"
+        ).strip().lower()
+        if type_guided_grouping_mode not in {
+            "type", "random", "success_then_type",
+        }:
+            type_guided_grouping_mode = "type"
+        type_guided_grouping_seed = int(
+            cfg.get("type_guided_grouping_seed", -1)
+        )
+        if type_guided_grouping_seed < 0:
+            type_guided_grouping_seed = int(seed)
         type_guided_top_mode = str(
             cfg.get("type_guided_top_mode", "auto") or "auto"
         ).strip().lower()
-        if type_guided_top_mode not in {"auto", "real_root", "virtual_root"}:
+        if type_guided_top_mode not in {
+            "auto", "real_root", "virtual_root", "conservative_root",
+        }:
             type_guided_top_mode = "auto"
-        type_guided_leaf_fallback = bool(
-            cfg.get("type_guided_leaf_fallback", True)
+        # Backward compatibility: legacy flat configs may still provide the old
+        # leaf-specific name. The base config no longer emits it, so presence
+        # here means the caller intentionally used the compatibility alias.
+        if "type_guided_leaf_fallback" in cfg:
+            type_guided_fallback_enabled = bool(
+                cfg.get("type_guided_leaf_fallback")
+            )
+        else:
+            type_guided_fallback_enabled = bool(
+                cfg.get("type_guided_fallback_enabled", True)
+            )
+        type_guided_fallback_max_hops = int(
+            cfg.get("type_guided_fallback_max_hops", -1)
+        )
+        if type_guided_fallback_max_hops < -1:
+            type_guided_fallback_max_hops = -1
+        type_guided_fallback_allow_leaf = bool(
+            cfg.get("type_guided_fallback_allow_leaf", True)
         )
         type_guided_rollout_repeats = max(int(cfg.get("type_guided_rollout_repeats", 3) or 3), 1)
         type_guided_tau_succ = float(cfg.get("type_guided_tau_succ", 1.0) or 1.0)
@@ -1274,8 +1331,13 @@ class PatchTreeTrainer:
         cfg["type_guided_max_tree_depth"] = type_guided_max_tree_depth
         cfg["type_guided_merge_target_children"] = type_guided_merge_target_children
         cfg["type_guided_merge_max_children"] = type_guided_merge_max_children
+        cfg["type_guided_merge_strategy"] = type_guided_merge_strategy
+        cfg["type_guided_grouping_mode"] = type_guided_grouping_mode
+        cfg["type_guided_grouping_seed"] = type_guided_grouping_seed
         cfg["type_guided_top_mode"] = type_guided_top_mode
-        cfg["type_guided_leaf_fallback"] = type_guided_leaf_fallback
+        cfg["type_guided_fallback_enabled"] = type_guided_fallback_enabled
+        cfg["type_guided_fallback_max_hops"] = type_guided_fallback_max_hops
+        cfg["type_guided_fallback_allow_leaf"] = type_guided_fallback_allow_leaf
         cfg["type_guided_rollout_repeats"] = type_guided_rollout_repeats
         cfg["type_guided_tau_succ"] = type_guided_tau_succ
         cfg["type_guided_max_patch_records"] = type_guided_max_patch_records
@@ -1339,10 +1401,14 @@ class PatchTreeTrainer:
             f"tree={type_guided_tree_builder}/depth={type_guided_tree_depth} "
             f"max_depth={type_guided_max_tree_depth} "
             f"fanout={type_guided_merge_target_children}/{type_guided_merge_max_children} "
+            f"merge={type_guided_merge_strategy} "
+            f"grouping={type_guided_grouping_mode}/{type_guided_grouping_seed} "
             f"top={type_guided_top_mode} "
             f"min_support={type_guided_min_support} "
             f"max_leaf_groups={type_guided_max_leaf_groups} "
-            f"leaf_fallback={type_guided_leaf_fallback} "
+            f"fallback={type_guided_fallback_enabled}/"
+            f"hops={type_guided_fallback_max_hops}/"
+            f"leaf={type_guided_fallback_allow_leaf} "
             f"rollout_repeats={type_guided_rollout_repeats} "
             f"leaf_workers={type_guided_leaf_merge_workers} "
             f"mid_workers={type_guided_mid_merge_workers}"
@@ -1795,6 +1861,9 @@ class PatchTreeTrainer:
                         max_tree_depth=type_guided_max_tree_depth,
                         merge_target_children=type_guided_merge_target_children,
                         merge_max_children=type_guided_merge_max_children,
+                        merge_strategy=type_guided_merge_strategy,
+                        grouping_mode=type_guided_grouping_mode,
+                        grouping_seed=type_guided_grouping_seed,
                         top_mode=type_guided_top_mode,
                         clustering_enabled=type_guided_clustering,
                         cluster_target_size=type_guided_cluster_target_size,
@@ -2068,7 +2137,8 @@ class PatchTreeTrainer:
                     )
                 elif (
                     use_type_guided_merge
-                    and type_guided_leaf_fallback
+                    and type_guided_fallback_enabled
+                    and type_guided_fallback_max_hops != 0
                     and type_guided_artifact
                     and gate is not None
                     and (
@@ -2205,6 +2275,9 @@ class PatchTreeTrainer:
                         "top_k": type_guided_fallback_top_k,
                         "recursive": recursive_fallback,
                         "virtual_root": virtual_root,
+                        "enabled": type_guided_fallback_enabled,
+                        "max_hops": type_guided_fallback_max_hops,
+                        "allow_leaf": type_guided_fallback_allow_leaf,
                         "min_leaf_coverage": type_guided_fallback_min_leaf_coverage,
                         "validation_budget": type_guided_validation_budget,
                         "node_evaluations": 0,
@@ -2218,11 +2291,14 @@ class PatchTreeTrainer:
                         "kept_leaf_ids": [],
                         "child_results": [],
                         "kept_child_ids": [],
+                        "skipped_nodes": [],
                         "accepted": False,
                     }
                     kept_child_patches: list[dict] = []
                     child_subset_cache: dict[str, tuple[float, float, str]] = {}
-                    pending_children = list(child_patches)
+                    pending_children: list[tuple[dict, int]] = [
+                        (child, 1) for child in child_patches
+                    ]
                     visited_child_ids: set[str] = set()
                     node_budget = (
                         type_guided_validation_budget
@@ -2231,22 +2307,22 @@ class PatchTreeTrainer:
                     )
                     while pending_children and fallback_rec["node_evaluations"] < node_budget:
                         pending_children.sort(
-                            key=lambda node: (
+                            key=lambda item: (
                                 -int(
-                                    node.get("leaf_coverage")
-                                    or len(node.get("leaf_ids") or [])
+                                    item[0].get("leaf_coverage")
+                                    or len(item[0].get("leaf_ids") or [])
                                     or 1
                                 ),
                                 str(
-                                    node.get("node_id")
-                                    or node.get("mid_id")
-                                    or node.get("leaf_id")
-                                    or node.get("record_id")
+                                    item[0].get("node_id")
+                                    or item[0].get("mid_id")
+                                    or item[0].get("leaf_id")
+                                    or item[0].get("record_id")
                                     or ""
                                 ),
                             ),
                         )
-                        child = pending_children.pop(0)
+                        child, fallback_hop = pending_children.pop(0)
                         child_id = str(
                             child.get("node_id")
                             or child.get("mid_id")
@@ -2257,11 +2333,25 @@ class PatchTreeTrainer:
                         if not child_id or child_id in visited_child_ids:
                             continue
                         visited_child_ids.add(child_id)
-                        fallback_rec["node_evaluations"] += 1
                         child_level = str(
                             child.get("node_level")
                             or ("mid" if child.get("mid_id") else "leaf")
                         )
+                        skip_reason = _fallback_node_skip_reason(
+                            child,
+                            fallback_hop=fallback_hop,
+                            max_hops=type_guided_fallback_max_hops,
+                            allow_leaf=type_guided_fallback_allow_leaf,
+                        )
+                        if skip_reason:
+                            fallback_rec["skipped_nodes"].append({
+                                "child_id": child_id,
+                                "child_level": child_level,
+                                "fallback_hop": fallback_hop,
+                                "reason": skip_reason,
+                            })
+                            continue
+                        fallback_rec["node_evaluations"] += 1
                         leaf_id = str(child.get("leaf_id") or child_id)
                         child_candidate, child_apply_report = apply_patch_with_report(
                             current_skill, child,
@@ -2309,6 +2399,7 @@ class PatchTreeTrainer:
                         child_row = {
                             "child_id": child_id,
                             "child_level": child_level,
+                            "fallback_hop": fallback_hop,
                             "leaf_id": leaf_id,
                             "mid_id": child.get("mid_id", ""),
                             "leaf_ids": child.get("leaf_ids", []),
@@ -2355,7 +2446,10 @@ class PatchTreeTrainer:
                                     )
                                     for node in next_children
                                 ]
-                                pending_children.extend(next_children)
+                                pending_children.extend(
+                                    (node, fallback_hop + 1)
+                                    for node in next_children
+                                )
                             else:
                                 child_row["descended"] = False
                     fallback_rec["budget_exhausted"] = bool(pending_children)
@@ -2504,19 +2598,25 @@ class PatchTreeTrainer:
                             if fallback_level != "leaf":
                                 step_rec["type_guided_fallback_selected"] = f"{fallback_level}_combination"
                     fallback_rec["timing_s"] = round(time.time() - fallback_t0, 1)
+                    with open(os.path.join(step_dir, "type_guided_fallback.json"), "w") as f:
+                        json.dump(fallback_rec, f, ensure_ascii=False, indent=2)
+                    # Compatibility artifact for existing analysis scripts.
                     with open(os.path.join(step_dir, "type_guided_leaf_fallback.json"), "w") as f:
                         json.dump(fallback_rec, f, ensure_ascii=False, indent=2)
                     if type_guided_version == "v2":
                         with open(os.path.join(step_dir, "type_guided_v2_fallback.json"), "w") as f:
                             json.dump(fallback_rec, f, ensure_ascii=False, indent=2)
-                    step_rec["type_guided_leaf_fallback"] = {
+                    step_rec["type_guided_fallback"] = {
                         "attempted": fallback_rec["attempted"],
                         "fallback_level": fallback_level,
                         "n_leaves": len(child_patches) if fallback_level == "leaf" else len(type_guided_artifact.get("leaf_patches", []) or []),
                         "n_children": len(child_patches),
                         "n_kept": len(fallback_rec["kept_child_ids"]),
+                        "max_hops": type_guided_fallback_max_hops,
+                        "allow_leaf": type_guided_fallback_allow_leaf,
                         "accepted": fallback_rec["accepted"],
                     }
+                    step_rec["type_guided_leaf_fallback"] = step_rec["type_guided_fallback"]
                     if fallback_rec["accepted"]:
                         print(
                             f"    [type-guided fallback] accepted {fallback_level} combination "

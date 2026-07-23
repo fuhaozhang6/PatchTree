@@ -50,7 +50,7 @@ LIVEMATH_ARK_EXEC_TIMEOUT="${LIVEMATH_ARK_EXEC_TIMEOUT:-1800}"
 LIVEMATH_ARK_CONTINUE_ON_ERROR="${LIVEMATH_ARK_CONTINUE_ON_ERROR:-1}"
 
 # Shared method settings. Each ablation row appends one focused override.
-LIVEMATH_ARK_SHARED_CFG="${LIVEMATH_ARK_SHARED_CFG:-train.batch_size=35 optimizer.type_guided_rollout_repeats=4 optimizer.type_guided_tau_succ=0.5 optimizer.type_guided_min_support=1 optimizer.type_guided_clustering=false optimizer.type_guided_tail_bank=true optimizer.learning_rate=999 optimizer.min_learning_rate=999 optimizer.lr_scheduler=constant train.seed=42}"
+LIVEMATH_ARK_SHARED_CFG="${LIVEMATH_ARK_SHARED_CFG:-train.batch_size=18 optimizer.type_guided_rollout_repeats=4 optimizer.type_guided_tau_succ=0.5 optimizer.type_guided_min_support=1 optimizer.type_guided_clustering=false optimizer.type_guided_tail_bank=false optimizer.learning_rate=999 optimizer.min_learning_rate=999 optimizer.lr_scheduler=constant train.seed=42}"
 
 LIVEMATH_ARK_RESULTS=()
 

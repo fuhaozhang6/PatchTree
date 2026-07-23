@@ -54,5 +54,8 @@ def test_default_patchtree_budget_is_non_binding_and_fuse_is_enabled() -> None:
     assert cfg["type_guided_merge_target_children"] == 3
     assert cfg["type_guided_merge_max_children"] == 4
     assert cfg["type_guided_top_mode"] == "auto"
+    assert cfg["type_guided_fallback_enabled"] is True
+    assert cfg["type_guided_fallback_max_hops"] == -1
+    assert cfg["type_guided_fallback_allow_leaf"] is True
     assert cfg["type_guided_fallback_min_leaf_coverage"] == 1
     assert cfg["type_guided_validation_budget"] == 16

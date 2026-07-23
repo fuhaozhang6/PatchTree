@@ -42,7 +42,13 @@ optimizer:
   type_guided_max_tree_depth: 4
   type_guided_merge_target_children: 3
   type_guided_merge_max_children: 4
-  type_guided_top_mode: auto       # auto | real_root | virtual_root
+  type_guided_merge_strategy: hierarchical  # hierarchical | concat | flat_fuse
+  type_guided_grouping_mode: type       # type | random | success_then_type
+  type_guided_grouping_seed: -1         # -1 reuses train.seed
+  type_guided_top_mode: auto       # auto | real_root | virtual_root | conservative_root
+  type_guided_fallback_enabled: true
+  type_guided_fallback_max_hops: -1
+  type_guided_fallback_allow_leaf: true
   type_guided_fallback_min_leaf_coverage: 1
   type_guided_validation_budget: 16
 

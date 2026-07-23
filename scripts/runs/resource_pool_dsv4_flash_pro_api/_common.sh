@@ -254,14 +254,15 @@ run_dataset() {
   if comparison_truthy "${TYPE_GUIDED_TAIL_BANK:-0}"; then
     all_cfg+=("optimizer.type_guided_tail_bank=true")
   fi
-  # Root-reject -> child fallback. type_guided_leaf_fallback defaults to true in
-  # the base config: when the merged root patch is rejected by the gate, the
-  # trainer falls back to evaluating individual leaf/child patches. Set
+  # Root-reject -> hierarchical child fallback. The generic fallback defaults to
+  # enabled: when the merged root patch is rejected by the gate, the trainer
+  # evaluates eligible child nodes recursively. The legacy environment variable
+  # name is retained for compatibility. Set
   # TYPE_GUIDED_LEAF_FALLBACK=0 (or false) to DISABLE that fallback, so a rejected
   # root simply ends the step with no child search. Leaving it unset keeps the
   # default (enabled); we only emit an override when explicitly turned off.
   if [[ -n "${TYPE_GUIDED_LEAF_FALLBACK:-}" ]] && ! comparison_truthy "${TYPE_GUIDED_LEAF_FALLBACK}"; then
-    all_cfg+=("optimizer.type_guided_leaf_fallback=false")
+    all_cfg+=("optimizer.type_guided_fallback_enabled=false")
   fi
   # Edit-budget (a.k.a. optimizer.learning_rate) control. The base config caps
   # each step at learning_rate=4 edits, decaying toward min_learning_rate=2 via
@@ -282,7 +283,7 @@ run_dataset() {
   # General escape hatch for arbitrary `key=value` overrides (space-separated),
   # merged into the SAME --cfg-options block. Ablation launchers use this to
   # inject per-run knobs (train.batch_size, optimizer.type_guided_rollout_repeats,
-  # optimizer.type_guided_leaf_fallback, ...) without adding a second
+  # optimizer.type_guided_fallback_enabled, ...) without adding a second
   # --cfg-options occurrence, which argparse (nargs="+") would let clobber the
   # built-in block. Placed last so an explicit ablation value wins over the
   # env-toggle defaults above.

@@ -16,6 +16,9 @@ def test_type_guided_config_flattens_from_optimizer_section():
             "type_guided_leaf_fallback": True,
             "type_guided_leaf_merge_workers": 4,
             "type_guided_mid_merge_workers": 2,
+            "type_guided_merge_strategy": "concat",
+            "type_guided_grouping_mode": "random",
+            "type_guided_grouping_seed": 123,
         }
     })
 
@@ -25,6 +28,23 @@ def test_type_guided_config_flattens_from_optimizer_section():
     assert flat["type_guided_leaf_fallback"] is True
     assert flat["type_guided_leaf_merge_workers"] == 4
     assert flat["type_guided_mid_merge_workers"] == 2
+    assert flat["type_guided_merge_strategy"] == "concat"
+    assert flat["type_guided_grouping_mode"] == "random"
+    assert flat["type_guided_grouping_seed"] == 123
+
+
+def test_generic_fallback_config_flattens_from_optimizer_section():
+    flat = flatten_config({
+        "optimizer": {
+            "type_guided_fallback_enabled": True,
+            "type_guided_fallback_max_hops": 1,
+            "type_guided_fallback_allow_leaf": False,
+        }
+    })
+
+    assert flat["type_guided_fallback_enabled"] is True
+    assert flat["type_guided_fallback_max_hops"] == 1
+    assert flat["type_guided_fallback_allow_leaf"] is False
 
 
 def test_type_guided_merge_fallback_builds_leaf_and_root(monkeypatch):
@@ -270,3 +290,132 @@ def test_patchtree_leaf_merges_execute_concurrently(monkeypatch):
 
     assert max_active == 2
     assert artifact["settings"]["leaf_merge_workers"] == 2
+
+
+def test_concat_strategy_skips_root_fusion(monkeypatch):
+    stages: list[str] = []
+
+    def fake_chat(*, stage, **kwargs):
+        stages.append(stage)
+        raise RuntimeError("use deterministic leaf fallback")
+
+    monkeypatch.setattr(type_guided_merge, "chat_optimizer", fake_chat)
+    patch = {
+        "edits": [
+            {
+                "op": "append",
+                "content": "Repair A.",
+                "question_type": "type_a",
+                "revision_type": "repair_a",
+                "support_count": 1,
+            },
+            {
+                "op": "append",
+                "content": "Repair B.",
+                "question_type": "type_b",
+                "revision_type": "repair_b",
+                "support_count": 1,
+            },
+        ]
+    }
+
+    root, artifact = type_guided_merge.build_patchtree(
+        "",
+        [patch],
+        min_support=1,
+        allow_open_types=True,
+        merge_strategy="concat",
+        verbose=False,
+    )
+
+    assert stages == ["type_guided_leaf", "type_guided_leaf"]
+    assert artifact["hierarchy"]["builder"] == "concat"
+    assert artifact["settings"]["merge_strategy"] == "concat"
+    assert [edit["content"] for edit in root["edits"]] == ["Repair A.", "Repair B."]
+
+
+def test_random_grouping_is_deterministic_and_size_matched(monkeypatch):
+    monkeypatch.setattr(
+        type_guided_merge,
+        "chat_optimizer",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("fallback")),
+    )
+    patch = {
+        "edits": [
+            {
+                "op": "append",
+                "content": f"Repair {idx}.",
+                "question_type": "large" if idx < 3 else "small",
+                "revision_type": "repair",
+                "support_count": 1,
+            }
+            for idx in range(4)
+        ]
+    }
+
+    _root_a, artifact_a = type_guided_merge.build_patchtree(
+        "",
+        [patch],
+        min_support=1,
+        allow_open_types=True,
+        grouping_mode="random",
+        grouping_seed=7,
+        merge_strategy="concat",
+        verbose=False,
+    )
+    _root_b, artifact_b = type_guided_merge.build_patchtree(
+        "",
+        [patch],
+        min_support=1,
+        allow_open_types=True,
+        grouping_mode="random",
+        grouping_seed=7,
+        merge_strategy="concat",
+        verbose=False,
+    )
+
+    assert [len(group["edits"]) for group in artifact_a["groups"]] == [3, 1]
+    assert artifact_a["groups"] == artifact_b["groups"]
+
+
+def test_success_then_type_separates_failure_evidence(monkeypatch):
+    monkeypatch.setattr(
+        type_guided_merge,
+        "chat_optimizer",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("fallback")),
+    )
+    patch = {
+        "edits": [
+            {
+                "op": "append",
+                "content": "Repair consistent failure.",
+                "question_type": "math",
+                "revision_type": "verify",
+                "evidence_success_rate": 0.0,
+                "support_count": 1,
+            },
+            {
+                "op": "append",
+                "content": "Repair unstable failure.",
+                "question_type": "math",
+                "revision_type": "verify",
+                "evidence_success_rate": 0.25,
+                "support_count": 1,
+            },
+        ]
+    }
+
+    _root, artifact = type_guided_merge.build_patchtree(
+        "",
+        [patch],
+        min_support=1,
+        allow_open_types=True,
+        grouping_mode="success_then_type",
+        merge_strategy="concat",
+        verbose=False,
+    )
+
+    assert {group["success_bucket"] for group in artifact["groups"]} == {
+        "all_failure",
+        "partial_success",
+    }

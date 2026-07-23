@@ -75,6 +75,8 @@ def test_type_guided_v2_generates_compact_dataset_specific_record(monkeypatch, t
         "condition": "the question asks for a short entity",
         "boundary": "retain required qualifiers",
         "patch": {"op": "append", "content": "Return only the minimal answer span."},
+        "evidence_success_rate": 0.5,
+        "evidence_status": "unstable",
         "record_id": "R0001",
     }]
 
@@ -362,6 +364,63 @@ def test_dynamic_tree_uses_virtual_root_when_no_genuine_top_abstraction(monkeypa
     assert hierarchy["fallback_top_node_ids"] == ["L1", "L2"]
     assert root["shared_core"] is None
     assert "virtual-root frontier carrier" in root["reasoning"]
+    json.dumps(artifact)
+
+
+def test_dynamic_tree_conservative_root_integrates_without_global_core(monkeypatch):
+    def fake_chat(*, stage, **kwargs):
+        if stage == "type_guided_mid_plan":
+            return '{"reasoning":"incompatible","mid_nodes":[]}', {}
+        if stage == "type_guided_leaf":
+            return _node_json(
+                content="Apply the local repair.",
+                condition="the local condition holds",
+                source_ids=["R0001"],
+            ), {}
+        if stage == "type_guided_top_integrate":
+            return (
+                '{"reasoning":"preserve independent repairs","edits":['
+                '{"op":"append","content":"Apply both bounded repairs.",'
+                '"condition":"either bounded condition holds","boundary":"",'
+                '"source_child_ids":["L1","L2"]}],'
+                '"dropped_child_insights":[]}',
+                {},
+            )
+        raise AssertionError(stage)
+
+    monkeypatch.setattr("skillopt.gradient.type_guided_merge.chat_optimizer", fake_chat)
+    monkeypatch.setattr(type_guided_merge_v2, "chat_optimizer", fake_chat)
+    records = [
+        {
+            "record_id": f"R{idx:04d}",
+            "question_type": f"question_type_{idx}",
+            "revision_type": f"revision_type_{idx}",
+            "repair_signature": f"repair_{idx}",
+            "condition": f"condition_{idx}",
+            "boundary": "",
+            "patch": {"op": "append", "content": f"Repair {idx}."},
+        }
+        for idx in range(1, 3)
+    ]
+
+    root, artifact = type_guided_merge_v2.merge_type_guided_v2_records(
+        skill_content="",
+        patch_records=records,
+        min_support=1,
+        tree_builder="recursive",
+        top_mode="conservative_root",
+        verbose=False,
+    )
+
+    hierarchy = artifact["hierarchy"]
+    assert hierarchy["top_mode"] == "conservative_root"
+    assert hierarchy["virtual_root"] is False
+    assert hierarchy["fallback_top_node_ids"] == ["L1", "L2"]
+    assert root["node_id"] == "ROOT"
+    assert root["shared_core"] is None
+    assert root["top_integration"]["status"] == "llm_integrated"
+    assert root["edits"][0]["source_child_ids"] == ["L1", "L2"]
+    assert "When either bounded condition holds" in root["edits"][0]["content"]
     json.dumps(artifact)
 
 

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from skillopt.engine.trainer import (
+    _fallback_node_skip_reason,
     _load_selection_result_cache,
     _save_selection_result_cache,
     _slice_selection_results,
@@ -74,6 +75,24 @@ def test_recursive_fallback_descends_to_direct_children_but_stops_at_leaf():
     assert _recursive_fallback_children(
         parent, node_by_id=registry, min_leaf_coverage=2,
     ) == []
+
+
+def test_fallback_node_limits_hops_and_can_exclude_leaves():
+    internal = {"node_id": "N1", "node_level": "internal"}
+    leaf = {"node_id": "L1", "node_level": "leaf"}
+
+    assert _fallback_node_skip_reason(
+        internal, fallback_hop=1, max_hops=1, allow_leaf=True,
+    ) == ""
+    assert _fallback_node_skip_reason(
+        internal, fallback_hop=2, max_hops=1, allow_leaf=True,
+    ) == "beyond_max_hops"
+    assert _fallback_node_skip_reason(
+        leaf, fallback_hop=1, max_hops=-1, allow_leaf=False,
+    ) == "leaf_fallback_disabled"
+    assert _fallback_node_skip_reason(
+        leaf, fallback_hop=3, max_hops=-1, allow_leaf=True,
+    ) == ""
 
 
 def test_full_selection_cache_can_score_the_exact_fallback_subset(tmp_path):

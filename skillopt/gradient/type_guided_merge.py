@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -201,23 +202,77 @@ def _group_edits(
     *,
     allow_open_types: bool = False,
     group_by_cluster: bool = False,
+    grouping_mode: str = "type",
+    grouping_seed: int = 0,
 ) -> list[dict]:
+    grouping_mode = str(grouping_mode or "type").strip().lower()
+    if grouping_mode not in {"type", "random", "success_then_type"}:
+        grouping_mode = "type"
+
     grouped: dict[tuple[str, ...], list[dict]] = defaultdict(list)
-    for edit in edits:
-        cluster_id = str(edit.get("cluster_id") or "").strip()
-        if group_by_cluster and cluster_id:
-            key = ("cluster", cluster_id)
-        else:
-            key = (
-                "type",
+    if grouping_mode == "random" and not group_by_cluster:
+        # Match the type-group size distribution so the ablation changes only
+        # membership, not the number or approximate size of leaf groups.
+        typed: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for edit in edits:
+            typed[(
                 _normalise_question_type(
                     edit.get("question_type"), allow_open=allow_open_types,
                 ),
                 _normalise_revision_type(
                     edit.get("revision_type"), allow_open=allow_open_types,
                 ),
+            )].append(edit)
+        target_sizes = [
+            len(items)
+            for _key, items in sorted(
+                typed.items(),
+                key=lambda kv: (
+                    -sum(_support_count(edit) for edit in kv[1]),
+                    kv[0],
+                ),
             )
-        grouped[key].append(edit)
+        ]
+        shuffled = list(edits)
+        random.Random(int(grouping_seed)).shuffle(shuffled)
+        offset = 0
+        for idx, size in enumerate(target_sizes, start=1):
+            grouped[("random", f"G{idx:03d}")].extend(
+                shuffled[offset:offset + size],
+            )
+            offset += size
+    else:
+        for edit in edits:
+            cluster_id = str(edit.get("cluster_id") or "").strip()
+            if group_by_cluster and cluster_id:
+                key = ("cluster", cluster_id)
+            elif grouping_mode == "success_then_type":
+                try:
+                    q_i = float(edit.get("evidence_success_rate", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    q_i = 0.0
+                success_bucket = "all_failure" if q_i <= 0.0 else "partial_success"
+                key = (
+                    "success_then_type",
+                    success_bucket,
+                    _normalise_question_type(
+                        edit.get("question_type"), allow_open=allow_open_types,
+                    ),
+                    _normalise_revision_type(
+                        edit.get("revision_type"), allow_open=allow_open_types,
+                    ),
+                )
+            else:
+                key = (
+                    "type",
+                    _normalise_question_type(
+                        edit.get("question_type"), allow_open=allow_open_types,
+                    ),
+                    _normalise_revision_type(
+                        edit.get("revision_type"), allow_open=allow_open_types,
+                    ),
+                )
+            grouped[key].append(edit)
 
     groups: list[dict] = []
     for idx, (key, items) in enumerate(
@@ -238,6 +293,30 @@ def _group_edits(
             cluster_revision_type = str(first.get("cluster_revision_type") or "")
             cluster_source = str(first.get("cluster_source") or "")
             repair_signature = str(first.get("repair_signature") or "").strip()
+            success_bucket = ""
+            random_group_id = ""
+        elif key[0] == "success_then_type":
+            question_type = key[2]
+            revision_type = key[3]
+            cluster_id = ""
+            cluster_label = ""
+            cluster_question_type = ""
+            cluster_revision_type = ""
+            cluster_source = ""
+            repair_signature = ""
+            success_bucket = key[1]
+            random_group_id = ""
+        elif key[0] == "random":
+            question_type = "mixed"
+            revision_type = "mixed"
+            cluster_id = ""
+            cluster_label = ""
+            cluster_question_type = ""
+            cluster_revision_type = ""
+            cluster_source = ""
+            repair_signature = ""
+            success_bucket = ""
+            random_group_id = key[1]
         else:
             question_type = key[1]
             revision_type = key[2]
@@ -247,6 +326,8 @@ def _group_edits(
             cluster_revision_type = ""
             cluster_source = ""
             repair_signature = ""
+            success_bucket = ""
+            random_group_id = ""
         support_ids: list[str] = []
         seen: set[str] = set()
         support_without_ids = 0
@@ -280,6 +361,10 @@ def _group_edits(
         group["member_cluster_revision_type_counts"] = _count_field(items, "cluster_revision_type")
         if repair_signature:
             group["repair_signature"] = repair_signature
+        if success_bucket:
+            group["success_bucket"] = success_bucket
+        if random_group_id:
+            group["random_group_id"] = random_group_id
         groups.append(group)
     return groups
 
@@ -575,6 +660,197 @@ def _build_root_patch(
         edit["source_type"] = edit.get("source_type") or "failure"
         edit["support_count"] = max(_support_count(edit), support_count or 1)
     return patch
+
+
+def _build_conservative_root_patch(
+    *,
+    skill_content: str,
+    child_patches: list[dict],
+    allow_open_types: bool = False,
+) -> dict:
+    """Integrate top-frontier nodes without inventing a global abstraction."""
+    child_by_id: dict[str, dict] = {}
+    payload: list[dict] = []
+    for idx, child in enumerate(child_patches, start=1):
+        child_id = _node_id(child, f"C{idx}")
+        child_by_id[child_id] = child
+        payload.append({
+            "child_id": child_id,
+            "node_level": child.get("node_level", ""),
+            "leaf_ids": _node_leaf_ids(child),
+            "question_type": child.get("question_type", ""),
+            "revision_type": child.get("revision_type", ""),
+            "support_count": child.get("support_count", 0),
+            "support_sample_ids": child.get("support_sample_ids", []),
+            "reasoning": child.get("reasoning", ""),
+            "boundary": child.get("boundary", ""),
+            "edits": _patch_edits(child),
+        })
+
+    fallback = _fallback_parent_patch(
+        child_patches,
+        allow_open_types=allow_open_types,
+        reasoning=(
+            "fallback conservative root: deterministically preserve top-frontier "
+            "edits after integration failed"
+        ),
+    )
+    fallback["top_integration"] = {
+        "mode": "conservative_root",
+        "status": "deterministic_fallback",
+        "n_children": len(child_patches),
+    }
+    if not child_by_id:
+        return fallback
+
+    user = (
+        f"## Current Skill\n{skill_content}\n\n"
+        "## Unvalidated Top-Frontier Children\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    try:
+        response, _ = chat_optimizer(
+            system=load_prompt("type_guided_top_integrate"),
+            user=user,
+            max_completion_tokens=16384,
+            retries=3,
+            stage="type_guided_top_integrate",
+        )
+        parsed = extract_json(response)
+        raw_edits = parsed.get("edits") if isinstance(parsed, dict) else None
+        raw_dropped = (
+            parsed.get("dropped_child_insights")
+            if isinstance(parsed, dict)
+            else None
+        )
+        if not isinstance(raw_edits, list):
+            raise ValueError("missing edits")
+        if not isinstance(raw_dropped, list):
+            raw_dropped = []
+
+        allowed_ids = set(child_by_id)
+        covered_ids: set[str] = set()
+        dropped_ids: set[str] = set()
+        dropped: list[dict] = []
+        for row in raw_dropped:
+            if not isinstance(row, dict):
+                continue
+            source_ids = _as_clean_str_list(row.get("source_child_ids"))
+            source_ids = [item for item in source_ids if item in allowed_ids]
+            reason = str(row.get("reason") or "").strip()
+            if source_ids and reason:
+                dropped_ids.update(source_ids)
+                dropped.append({
+                    "source_child_ids": source_ids,
+                    "reason": reason,
+                })
+
+        edits: list[dict] = []
+        for raw in raw_edits:
+            if not isinstance(raw, dict):
+                continue
+            op = str(raw.get("op") or "").strip()
+            target = str(raw.get("target") or "").strip()
+            content = str(raw.get("content") or "").strip()
+            condition = str(raw.get("condition") or "").strip()
+            boundary = str(raw.get("boundary") or "").strip()
+            source_ids = [
+                item
+                for item in _as_clean_str_list(raw.get("source_child_ids"))
+                if item in allowed_ids
+            ]
+            source_ids = list(dict.fromkeys(source_ids))
+            if (
+                op not in {"append", "insert_after", "replace", "delete"}
+                or (op != "delete" and not content)
+                or (op in {"insert_after", "replace", "delete"} and not target)
+                or (op == "delete" and condition)
+                or not source_ids
+            ):
+                continue
+
+            if op != "delete":
+                if condition:
+                    content = f"When {condition}:\n\n{content}"
+                if boundary:
+                    content += f"\n\nDo not apply this rule when {boundary}."
+            source_children = [child_by_id[item] for item in source_ids]
+            support_ids = list(dict.fromkeys(
+                support_id
+                for child in source_children
+                for edit in _patch_edits(child)
+                for support_id in _sample_ids(edit)
+            ))
+            leaf_ids = list(dict.fromkeys(
+                leaf_id
+                for child in source_children
+                for leaf_id in _node_leaf_ids(child)
+            ))
+            question_types = {
+                str(child.get("question_type") or "").strip()
+                for child in source_children
+                if str(child.get("question_type") or "").strip()
+            }
+            revision_types = {
+                str(child.get("revision_type") or "").strip()
+                for child in source_children
+                if str(child.get("revision_type") or "").strip()
+            }
+            edit = {
+                "op": op,
+                "source_child_ids": source_ids,
+                "leaf_ids": leaf_ids,
+                "condition": condition,
+                "boundary": boundary,
+                "question_type": (
+                    next(iter(question_types)) if len(question_types) == 1 else "other"
+                ),
+                "revision_type": (
+                    next(iter(revision_types)) if len(revision_types) == 1 else "other"
+                ),
+                "source_type": "failure",
+                "support_count": max(
+                    sum(int(child.get("support_count", 0) or 0) for child in source_children),
+                    1,
+                ),
+            }
+            if target:
+                edit["target"] = target
+            if op != "delete":
+                edit["content"] = content
+            if support_ids:
+                edit["support_sample_ids"] = support_ids
+            edits.append(edit)
+            covered_ids.update(source_ids)
+
+        if not edits:
+            raise ValueError("no valid integrated edits")
+        uncovered = allowed_ids - covered_ids - dropped_ids
+        if uncovered:
+            raise ValueError(
+                f"top integration omitted children: {sorted(uncovered)}"
+            )
+        return {
+            "reasoning": str(parsed.get("reasoning") or ""),
+            "shared_core": None,
+            "conditional_residuals": [],
+            "preserved_constraints": {},
+            "unresolved_conflicts": [
+                f"dropped {','.join(row['source_child_ids'])}: {row['reason']}"
+                for row in dropped
+            ],
+            "edits": edits,
+            "top_integration": {
+                "mode": "conservative_root",
+                "status": "llm_integrated",
+                "n_children": len(child_patches),
+                "n_output_edits": len(edits),
+                "dropped_child_insights": dropped,
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        fallback["top_integration"]["error"] = repr(exc)
+        return fallback
 
 
 def _node_leaf_ids(patch: dict) -> list[str]:
@@ -1058,13 +1334,37 @@ def _build_dynamic_hierarchy(
 
     top_nodes = frontier
     requested_top_mode = str(top_mode or "auto").strip().lower()
-    if requested_top_mode not in {"auto", "real_root", "virtual_root"}:
+    if requested_top_mode not in {
+        "auto", "real_root", "virtual_root", "conservative_root",
+    }:
         requested_top_mode = "auto"
     resolved_top_mode = "real_root" if len(top_nodes) == 1 else requested_top_mode
     root_patch: dict
     real_root_attempt: dict | None = None
+    conservative_root_attempt: dict | None = None
     if len(top_nodes) == 1:
         root_patch = top_nodes[0]
+    elif requested_top_mode == "conservative_root":
+        conservative_root_attempt = _build_conservative_root_patch(
+            skill_content=skill_content,
+            child_patches=top_nodes,
+            allow_open_types=allow_open_types,
+        )
+        resolved_top_mode = "conservative_root"
+        root_patch = conservative_root_attempt
+        root_patch.update({
+            "node_id": "ROOT",
+            "node_level": "root",
+            "tree_level": len(levels),
+            "child_ids": [_node_id(node) for node in top_nodes],
+            "leaf_ids": list(dict.fromkeys(
+                leaf_id
+                for node in top_nodes
+                for leaf_id in _as_clean_str_list(node.get("leaf_ids"))
+            )),
+        })
+        root_patch["leaf_coverage"] = len(root_patch["leaf_ids"])
+        node_by_id["ROOT"] = root_patch
     elif (
         requested_top_mode in {"auto", "real_root"}
         and len(top_nodes) <= max_children
@@ -1143,6 +1443,7 @@ def _build_dynamic_hierarchy(
         "level_reports": level_reports,
         "internal_nodes": internal_nodes,
         "real_root_attempt": real_root_attempt,
+        "conservative_root_attempt": conservative_root_attempt,
         "max_tree_depth": max_tree_depth,
         "actual_tree_depth": len(levels) + int("ROOT" in node_by_id),
         "target_children": target_children,
@@ -1168,6 +1469,9 @@ def build_patchtree(
     max_tree_depth: int = 4,
     merge_target_children: int = 3,
     merge_max_children: int = 4,
+    merge_strategy: str = "hierarchical",
+    grouping_mode: str = "type",
+    grouping_seed: int = 0,
     top_mode: str = "auto",
     leaf_merge_workers: int = 1,
     mid_merge_workers: int = 1,
@@ -1181,6 +1485,12 @@ def build_patchtree(
     update_mode = "patch"
     patches = list(patches)
     tree_depth = max(int(tree_depth or 1), 1)
+    merge_strategy = str(merge_strategy or "hierarchical").strip().lower()
+    if merge_strategy not in {"hierarchical", "concat", "flat_fuse"}:
+        merge_strategy = "hierarchical"
+    grouping_mode = str(grouping_mode or "type").strip().lower()
+    if grouping_mode not in {"type", "random", "success_then_type"}:
+        grouping_mode = "type"
 
     raw_edits = _extract_edits(
         patches, update_mode, allow_open_types=allow_open_types,
@@ -1245,6 +1555,9 @@ def build_patchtree(
                 "max_leaf_groups": max_leaf_groups,
                 "allow_open_types": allow_open_types,
                 "group_by_cluster": False,
+                "grouping_mode": grouping_mode,
+                "grouping_seed": int(grouping_seed),
+                "merge_strategy": merge_strategy,
                 "low_support_fallback": False,
                 "tree_depth": 1,
                 "leaf_merge_workers": 0,
@@ -1257,6 +1570,8 @@ def build_patchtree(
         raw_edits,
         allow_open_types=allow_open_types,
         group_by_cluster=group_by_cluster,
+        grouping_mode=grouping_mode,
+        grouping_seed=grouping_seed,
     )
     for group in groups:
         group["allow_open_types"] = bool(allow_open_types)
@@ -1338,6 +1653,8 @@ def build_patchtree(
     root_children_level = "leaf"
     root_child_patches = leaf_patches
     if (
+        merge_strategy == "hierarchical"
+        and
         str(tree_builder or "fixed").strip().lower() != "recursive"
         and tree_depth >= 3
         and len(leaf_patches) > 1
@@ -1372,7 +1689,34 @@ def build_patchtree(
             root_child_patches = mid_patches
 
     hierarchy: dict = {"builder": "fixed", "virtual_root": False}
-    if str(tree_builder or "fixed").strip().lower() == "recursive":
+    if merge_strategy == "concat":
+        root_children_level = "leaf"
+        root_child_patches = leaf_patches
+        root_patch = _fallback_parent_patch(
+            leaf_patches,
+            allow_open_types=allow_open_types,
+            reasoning="concat ablation: preserve all compiled leaf edits without root fusion",
+        )
+        hierarchy = {
+            "builder": "concat",
+            "top_mode": "concat",
+            "virtual_root": False,
+        }
+    elif merge_strategy == "flat_fuse":
+        root_children_level = "leaf"
+        root_child_patches = leaf_patches
+        root_patch = _build_root_patch(
+            skill_content=skill_content,
+            child_patches=leaf_patches,
+            allow_open_types=allow_open_types,
+            child_level="leaf",
+        )
+        hierarchy = {
+            "builder": "flat_fuse",
+            "top_mode": "real_root",
+            "virtual_root": False,
+        }
+    elif str(tree_builder or "fixed").strip().lower() == "recursive":
         root_patch, hierarchy = _build_dynamic_hierarchy(
             skill_content=skill_content,
             leaf_patches=leaf_patches,
@@ -1419,6 +1763,9 @@ def build_patchtree(
             "max_leaf_groups": max_leaf_groups,
             "allow_open_types": allow_open_types,
             "group_by_cluster": group_by_cluster,
+            "grouping_mode": grouping_mode,
+            "grouping_seed": int(grouping_seed),
+            "merge_strategy": merge_strategy,
             "low_support_fallback": low_support_fallback,
             "tree_depth": tree_depth,
             "tree_builder": hierarchy.get("builder", "fixed"),
