@@ -1,0 +1,14 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2e4f90c032667594b89cea91c9a737c7067557cb",
+  "prompts": {},
+  "humans": {
+    "h_73f5fc89915e4c": {
+      "author": "zhangfuhao <zhangfuhao@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
