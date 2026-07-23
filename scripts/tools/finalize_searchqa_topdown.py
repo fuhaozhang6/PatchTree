@@ -448,6 +448,7 @@ def finalize_topdown(
         writer = csv.DictWriter(
             handle,
             delimiter="\t",
+            lineterminator="\n",
             fieldnames=["run_name", "skill_path"],
         )
         writer.writeheader()

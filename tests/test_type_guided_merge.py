@@ -69,6 +69,43 @@ def test_type_guided_merge_fallback_builds_leaf_and_root(monkeypatch):
     assert all(edit["leaf_ids"] == ["L1"] for edit in root["edits"])
 
 
+def test_min_support_one_admits_singleton_as_normal_leaf(monkeypatch):
+    def fail_chat(*args, **kwargs):
+        raise RuntimeError("optimizer unavailable")
+
+    monkeypatch.setattr(type_guided_merge, "chat_optimizer", fail_chat)
+    patch = {
+        "edits": [{
+            "op": "append",
+            "content": "Check the cited value before calculating.",
+            "question_type": "derived_numeric_answer",
+            "revision_type": "operand_verification",
+            "support_sample_ids": ["only-example"],
+        }],
+    }
+
+    _root, support_one = type_guided_merge.build_patchtree(
+        "Initial skill",
+        [patch],
+        min_support=1,
+        low_support_fallback=False,
+        verbose=False,
+    )
+    _root, support_two = type_guided_merge.build_patchtree(
+        "Initial skill",
+        [patch],
+        min_support=2,
+        low_support_fallback=False,
+        verbose=False,
+    )
+
+    assert len(support_one["leaf_patches"]) == 1
+    assert support_one["leaf_patches"][0]["support_count"] == 1
+    assert support_one["dropped_groups"] == []
+    assert support_two["leaf_patches"] == []
+    assert support_two["dropped_groups"][0]["drop_reason"] == "support<2"
+
+
 def test_type_guided_merge_rejects_non_dict_llm_edits(monkeypatch):
     def bad_chat(*args, **kwargs):
         return '{"reasoning": "bad but valid json", "edits": ["bad", null]}', {}

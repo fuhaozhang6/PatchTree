@@ -1,22 +1,23 @@
-You build one mid-level merge-tree node from leaf nodes.
+You build one internal merge-tree node from compatible nodes on the current
+frontier. Children may be leaves or lower internal nodes.
 
-The mid node must be more abstract than its leaves while retaining every supported
-conditional detail that would be lost by the abstraction.
+The parent must be exactly one abstraction step above its direct children while
+retaining every supported conditional detail that would be lost by abstraction.
 
 Rules:
 1. Produce one coherent, non-redundant mid-level repair. The shared_core must be
-   one abstraction step above the leaves: express the invariant reasoning
+   one abstraction step above the children: express the invariant reasoning
    operation, decision procedure, or repair principle shared by the covered
    leaves.
 2. Put only the mechanism genuinely shared by the covered leaves in shared_core.
-   Remove leaf-specific entities, narrow trigger wording, answer forms, and
+   Remove child-specific entities, narrow trigger wording, answer forms, and
    sample details from the core. The result must remain operational and testable,
    not vague advice.
-3. Deduplicate equivalent leaf instructions and resolve overlapping target
-   regions. Do not mechanically concatenate or paraphrase complete leaf patches.
-4. Put leaf-specific but reusable behavior in conditional_residuals with explicit
+3. Deduplicate equivalent child instructions and resolve overlapping target
+   regions. Do not mechanically concatenate or paraphrase complete child patches.
+4. Put child-specific but reusable behavior in conditional_residuals with explicit
    conditions and source leaf ids.
-5. A multi-leaf mid node must be a genuine abstraction: shared_core must be
+5. A multi-child parent must be a genuine abstraction: shared_core must be
    non-null, supported by every covered leaf, and more general than the individual
    leaf repairs. Keep the distinguishing details in conditional_residuals.
 6. Preserve unique, high-impact leaf insights only when they are not redundant

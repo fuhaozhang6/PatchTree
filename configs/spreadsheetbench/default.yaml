@@ -9,7 +9,8 @@ train:
   accumulation: 1
 
 optimizer:
-  learning_rate: 4
+  learning_rate: 999
+  type_guided_fallback_sel_env_num: 24
 
 evaluation:
   sel_env_num: 0

@@ -227,6 +227,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--type_guided_min_support", type=int)
     p.add_argument("--type_guided_max_leaf_groups", type=int)
     p.add_argument("--type_guided_tree_depth", type=int)
+    p.add_argument("--type_guided_tree_builder", type=str,
+                   choices=["fixed", "recursive"])
+    p.add_argument("--type_guided_max_tree_depth", type=int)
+    p.add_argument("--type_guided_merge_target_children", type=int)
+    p.add_argument("--type_guided_merge_max_children", type=int)
+    p.add_argument("--type_guided_top_mode", type=str,
+                   choices=["auto", "real_root", "virtual_root"])
     p.add_argument("--type_guided_leaf_fallback", type=_BOOL)
     p.add_argument("--type_guided_rollout_repeats", type=int)
     p.add_argument("--type_guided_tau_succ", type=float)
@@ -234,6 +241,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--type_guided_fallback_eval_all_leaves", type=_BOOL)
     p.add_argument("--type_guided_fallback_top_k", type=int)
     p.add_argument("--type_guided_fallback_tau_child", type=float)
+    p.add_argument("--type_guided_fallback_min_leaf_coverage", type=int)
+    p.add_argument("--type_guided_validation_budget", type=int)
     p.add_argument("--type_guided_fallback_sel_env_num", type=int)
     p.add_argument("--type_guided_fallback_reconcile", type=str,
                    choices=["off", "deterministic", "llm_select", "llm_fuse"])
@@ -358,6 +367,11 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "type_guided_min_support": "optimizer.type_guided_min_support",
     "type_guided_max_leaf_groups": "optimizer.type_guided_max_leaf_groups",
     "type_guided_tree_depth": "optimizer.type_guided_tree_depth",
+    "type_guided_tree_builder": "optimizer.type_guided_tree_builder",
+    "type_guided_max_tree_depth": "optimizer.type_guided_max_tree_depth",
+    "type_guided_merge_target_children": "optimizer.type_guided_merge_target_children",
+    "type_guided_merge_max_children": "optimizer.type_guided_merge_max_children",
+    "type_guided_top_mode": "optimizer.type_guided_top_mode",
     "type_guided_leaf_fallback": "optimizer.type_guided_leaf_fallback",
     "type_guided_rollout_repeats": "optimizer.type_guided_rollout_repeats",
     "type_guided_tau_succ": "optimizer.type_guided_tau_succ",
@@ -365,6 +379,8 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "type_guided_fallback_eval_all_leaves": "optimizer.type_guided_fallback_eval_all_leaves",
     "type_guided_fallback_top_k": "optimizer.type_guided_fallback_top_k",
     "type_guided_fallback_tau_child": "optimizer.type_guided_fallback_tau_child",
+    "type_guided_fallback_min_leaf_coverage": "optimizer.type_guided_fallback_min_leaf_coverage",
+    "type_guided_validation_budget": "optimizer.type_guided_validation_budget",
     "type_guided_fallback_sel_env_num": "optimizer.type_guided_fallback_sel_env_num",
     "type_guided_fallback_reconcile": "optimizer.type_guided_fallback_reconcile",
     "type_guided_fallback_reconcile_min_children": "optimizer.type_guided_fallback_reconcile_min_children",

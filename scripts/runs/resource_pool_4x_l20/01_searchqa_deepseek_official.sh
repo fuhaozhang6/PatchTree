@@ -33,7 +33,7 @@ export EVAL_TEST="${EVAL_TEST:-true}"
 
 export TYPE_GUIDED_TREE_DEPTH="${TYPE_GUIDED_TREE_DEPTH:-2}"
 export TYPE_GUIDED_CLUSTERING="${TYPE_GUIDED_CLUSTERING:-false}"
-export TYPE_GUIDED_TAIL_BANK="${TYPE_GUIDED_TAIL_BANK:-false}"
+export TYPE_GUIDED_TAIL_BANK="${TYPE_GUIDED_TAIL_BANK:-true}"
 export TYPE_GUIDED_FALLBACK_TOP_K="${TYPE_GUIDED_FALLBACK_TOP_K:-4}"
 
 export TS="${TS:-resource_pool_searchqa_official_$(date +%Y%m%d_%H%M%S)}"

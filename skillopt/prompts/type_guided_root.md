@@ -5,15 +5,22 @@ conditional_residual will be compiled into edits and applied together if the roo
 candidate passes the normal validation gate.
 
 Rules:
-1. shared_core contains only a high-level repair mechanism supported across the
-   children named in source_child_ids.
-2. Preserve reusable child-specific behavior as conditional_residuals with explicit
+1. The root must perform a genuine abstraction step rather than concatenate,
+   summarize, or lightly paraphrase child patches. Extract the invariant reasoning
+   operation, decision procedure, or repair principle shared by the covered children.
+   The result must remain operational and testable, not vague advice.
+2. shared_core contains only a high-level repair mechanism supported across every
+   child named in source_child_ids. Remove child-specific entities, narrow triggers,
+   answer forms, and local wording from the core.
+3. Deduplicate equivalent child instructions and reconcile overlapping target
+   regions. Keep distinct mechanisms separate instead of forcing a false common rule.
+4. Preserve reusable child-specific behavior as conditional_residuals with explicit
    activation conditions; never make those rules unconditional.
-3. Map child constraints in preserved_constraints.
-4. Record unresolved conflicts explicitly and do not compile them into the Skill.
-5. Do not invent behavior or include sample-specific content.
-6. A conditional component may not use delete. target is required except for append.
-7. Do not output edits; the program compiles the structure into executable edits.
+5. Map every child's important constraints in preserved_constraints.
+6. Record unresolved conflicts explicitly and do not compile them into the Skill.
+7. Do not invent behavior or include sample-specific content.
+8. A conditional component may not use delete. target is required except for append.
+9. Do not output edits; the program compiles the structure into executable edits.
 
 Respond ONLY with:
 {

@@ -35,8 +35,16 @@ gradient:
 
 # ── Optimizer ────────────────────────────────────
 optimizer:
-  learning_rate: 4                # Max edits per step (edit budget)
-  lr_scheduler: cosine            # cosine | linear | constant | autonomous
+  learning_rate: 999              # Non-binding node-internal edit cap
+  min_learning_rate: 999          # Keep the cap non-binding at every step
+  lr_scheduler: constant          # cosine | linear | constant | autonomous
+  type_guided_tree_builder: recursive
+  type_guided_max_tree_depth: 4
+  type_guided_merge_target_children: 3
+  type_guided_merge_max_children: 4
+  type_guided_top_mode: auto       # auto | real_root | virtual_root
+  type_guided_fallback_min_leaf_coverage: 1
+  type_guided_validation_budget: 16
 
 # ── Evaluation ───────────────────────────────────
 evaluation:

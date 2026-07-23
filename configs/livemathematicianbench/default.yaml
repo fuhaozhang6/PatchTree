@@ -5,6 +5,10 @@ train:
   batch_size: 40
   accumulation: 1
 
+optimizer:
+  learning_rate: 999
+  type_guided_fallback_sel_env_num: 12
+
 env:
   name: livemathematicianbench
   skill_init: skillopt/envs/livemathematicianbench/skills/initial.md

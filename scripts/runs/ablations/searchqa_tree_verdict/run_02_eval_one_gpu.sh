@@ -222,8 +222,11 @@ finalize_cmd=(
   --mixed-weight 0.5
   --out-dir "${TOPDOWN_ROOT}/finalize"
 )
-while IFS=$'\t' read -r child_id run_name; do
-  [[ "${child_id}" == "child_id" ]] && continue
+while IFS=$'\t' read -r child_id run_name || [[ -n "${child_id}" ]]; do
+  # Tolerate CRLF manifests: strip any trailing carriage return.
+  child_id="${child_id%$'\r'}"
+  run_name="${run_name%$'\r'}"
+  [[ -z "${child_id}" || "${child_id}" == "child_id" ]] && continue
   finalize_cmd+=(
     --child-result
     "${child_id}=${PHASE1_EVAL_ROOT}/${run_name}/val/results.jsonl"

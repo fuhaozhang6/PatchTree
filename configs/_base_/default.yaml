@@ -61,13 +61,18 @@ gradient:
   analyst_workers: 16
 
 optimizer:
-  learning_rate: 4          # max edits per step (edit_budget)
-  min_learning_rate: 2      # min edits for decay schedulers
-  lr_scheduler: cosine      # constant / linear / cosine / autonomous
+  learning_rate: 999        # node-internal edit cap; intentionally non-binding by default
+  min_learning_rate: 999    # keep the cap non-binding for every optimization step
+  lr_scheduler: constant    # node count, not edit count, is the default structural budget
   lr_control_mode: fixed    # fixed / autonomous / none
-  type_guided_min_support: 2
+  type_guided_min_support: 2  # set 1 to admit singleton leaves; with 2 they can enter tail bank
   type_guided_max_leaf_groups: 8
   type_guided_tree_depth: 2   # 1 = records -> root; 2 = leaf -> root; 3 = leaf -> mid -> root
+  type_guided_tree_builder: recursive  # recursive / fixed
+  type_guided_max_tree_depth: 4
+  type_guided_merge_target_children: 3
+  type_guided_merge_max_children: 4
+  type_guided_top_mode: auto  # auto / real_root / virtual_root
   type_guided_leaf_fallback: true
   type_guided_rollout_repeats: 3
   type_guided_tau_succ: 1.0
@@ -75,17 +80,19 @@ optimizer:
   type_guided_fallback_eval_all_leaves: true
   type_guided_fallback_top_k: 0
   type_guided_fallback_tau_child: 0.0
-  type_guided_fallback_sel_env_num: 0  # 0 = reuse full selection split for fallback child evaluation
-  type_guided_fallback_reconcile: deterministic  # off / deterministic / llm_select / llm_fuse
+  type_guided_fallback_min_leaf_coverage: 1
+  type_guided_validation_budget: 16  # fallback node evaluations; final joint validation is separate
+  type_guided_fallback_sel_env_num: 0  # >0 = fixed-seed random subset; 0 = full selection split
+  type_guided_fallback_reconcile: llm_fuse  # off / deterministic / llm_select / llm_fuse
   type_guided_fallback_reconcile_min_children: 2
   type_guided_cache_dir: ""
   type_guided_patch_record_workers: 0
-  type_guided_clustering: false
+  type_guided_clustering: false  # optional global LLM clustering; enable explicitly per run
   type_guided_cluster_target_size: 6
   type_guided_cluster_max_size: 10
   type_guided_leaf_merge_workers: 4
   type_guided_mid_merge_workers: 4
-  type_guided_tail_bank: false
+  type_guided_tail_bank: true   # epoch-end slow update for unadopted low-support records
   type_guided_tail_min_support: 2
   type_guided_tail_max_records: 32
   type_guided_tail_max_leaf_groups: 4

@@ -1,3 +1,5 @@
+import json
+
 from skillopt.config import flatten_config
 from skillopt.engine import trainer
 from skillopt.gradient import type_guided_merge_v2
@@ -97,6 +99,60 @@ def test_type_guided_v2_skips_stable_success(monkeypatch):
     assert artifact["n_stable_success"] == 1
 
 
+def test_type_guided_v2_truncation_prioritizes_lowest_success_rate(monkeypatch):
+    seen: list[tuple[str, float, str]] = []
+
+    def fake_analyst(*, sample_group, q_i, status, **kwargs):
+        sample_id = str(sample_group["sample_id"])
+        seen.append((sample_id, q_i, status))
+        return {
+            "question_type": "generic",
+            "revision_type": "repair",
+            "repair_signature": f"repair {sample_id}",
+            "condition": "the failure condition holds",
+            "boundary": "",
+            "patch": {"op": "append", "content": f"Repair {sample_id}."},
+        }, {"sample_id": sample_id, "status": "ok"}
+
+    monkeypatch.setattr(
+        type_guided_merge_v2,
+        "_call_patch_record_analyst",
+        fake_analyst,
+    )
+    repeated_rollouts = []
+    outcomes = {
+        "q0": [0, 0, 0, 0],
+        "q25": [1, 0, 0, 0],
+        "q50": [1, 1, 0, 0],
+        "q75": [1, 1, 1, 0],
+    }
+    for repeat_id in range(4):
+        repeated_rollouts.append({
+            "repeat_id": repeat_id,
+            "results": [
+                {"id": sample_id, "hard": hard[repeat_id]}
+                for sample_id, hard in outcomes.items()
+            ],
+        })
+
+    records, artifact = type_guided_merge_v2.generate_patch_records(
+        skill_content="",
+        repeated_rollouts=repeated_rollouts,
+        tau_succ=1.0,
+        max_patch_records=2,
+        workers=1,
+        include_trajectories=False,
+        verbose=False,
+    )
+
+    assert [row[0] for row in seen] == ["q0", "q25"]
+    assert len(records) == 2
+    assert artifact["n_candidates_before_limit"] == 4
+    assert artifact["n_candidates"] == 2
+    assert artifact["n_candidates_dropped_by_limit"] == 2
+    assert artifact["selected_candidate_ids"] == ["q0", "q25"]
+
+
 def test_type_guided_v2_compiles_shared_core_and_conditional_residual(monkeypatch):
     def fake_chat(*, stage, **kwargs):
         if stage == "type_guided_leaf":
@@ -135,6 +191,9 @@ def test_type_guided_v2_compiles_shared_core_and_conditional_residual(monkeypatc
         verbose=False,
     )
     assert artifact["version"] == "v2"
+    assert artifact["hierarchy"]["builder"] == "fixed"
+    assert artifact["hierarchy"]["virtual_root"] is False
+    assert artifact["clustering"]["enabled"] is False
     assert "self_check" not in artifact
     assert root["shared_core"]["source_child_ids"] == ["L1"]
     assert len(root["conditional_residuals"]) == 1
@@ -183,6 +242,127 @@ def test_type_guided_v2_depth1_passes_records_directly_to_root(monkeypatch):
     assert artifact["mid_patches"] == []
     assert artifact["root_child_patches"][0]["record_id"] == "R0001"
     assert root["edits"]
+
+
+def test_dynamic_tree_builds_multiple_levels_with_bounded_fanout(monkeypatch):
+    plan_calls = 0
+
+    def fake_chat(*, stage, **kwargs):
+        nonlocal plan_calls
+        if stage == "type_guided_mid_plan":
+            plan_calls += 1
+            if plan_calls == 1:
+                return (
+                    '{"reasoning":"pair compatible leaves","mid_nodes":['
+                    '{"mid_id":"A","leaf_ids":["L1","L2"]},'
+                    '{"mid_id":"B","leaf_ids":["L3","L4"]}]}',
+                    {},
+                )
+            return (
+                '{"reasoning":"merge compatible parents","mid_nodes":['
+                '{"mid_id":"C","leaf_ids":["N1_1","N1_2"]}]}',
+                {},
+            )
+        if stage in {"type_guided_leaf", "type_guided_mid"}:
+            return _node_json(
+                content="Apply the shared repair procedure.",
+                condition="the repair condition holds",
+                source_ids=["R0001"],
+            ), {}
+        raise AssertionError(stage)
+
+    monkeypatch.setattr("skillopt.gradient.type_guided_merge.chat_optimizer", fake_chat)
+    monkeypatch.setattr(type_guided_merge_v2, "chat_optimizer", fake_chat)
+    records = [
+        {
+            "record_id": f"R{idx:04d}",
+            "question_type": f"question_type_{idx}",
+            "revision_type": f"revision_type_{idx}",
+            "repair_signature": f"repair_{idx}",
+            "condition": f"condition_{idx}",
+            "boundary": "",
+            "patch": {"op": "append", "content": f"Repair {idx}."},
+        }
+        for idx in range(1, 5)
+    ]
+
+    root, artifact = type_guided_merge_v2.merge_type_guided_v2_records(
+        skill_content="",
+        patch_records=records,
+        min_support=1,
+        tree_builder="recursive",
+        max_tree_depth=4,
+        merge_target_children=2,
+        merge_max_children=2,
+        leaf_merge_workers=1,
+        mid_merge_workers=1,
+        verbose=False,
+    )
+
+    hierarchy = artifact["hierarchy"]
+    assert hierarchy["builder"] == "recursive"
+    assert hierarchy["top_mode"] == "real_root"
+    assert hierarchy["virtual_root"] is False
+    assert hierarchy["levels"] == [
+        ["L1", "L2", "L3", "L4"],
+        ["N1_1", "N1_2"],
+        ["N2_1"],
+    ]
+    assert hierarchy["fallback_top_node_ids"] == ["N1_1", "N1_2"]
+    assert all(
+        len(node["child_ids"]) <= 2 for node in hierarchy["internal_nodes"]
+    )
+    assert root["node_id"] == "N2_1"
+    assert root["leaf_coverage"] == 4
+    json.dumps(artifact)
+
+
+def test_dynamic_tree_uses_virtual_root_when_no_genuine_top_abstraction(monkeypatch):
+    def fake_chat(*, stage, **kwargs):
+        if stage == "type_guided_mid_plan":
+            return '{"reasoning":"incompatible","mid_nodes":[]}', {}
+        if stage == "type_guided_root":
+            return "{}", {}
+        if stage == "type_guided_leaf":
+            return _node_json(
+                content="Apply the local repair.",
+                condition="the local condition holds",
+                source_ids=["R0001"],
+            ), {}
+        raise AssertionError(stage)
+
+    monkeypatch.setattr("skillopt.gradient.type_guided_merge.chat_optimizer", fake_chat)
+    monkeypatch.setattr(type_guided_merge_v2, "chat_optimizer", fake_chat)
+    records = [
+        {
+            "record_id": f"R{idx:04d}",
+            "question_type": f"question_type_{idx}",
+            "revision_type": f"revision_type_{idx}",
+            "repair_signature": f"repair_{idx}",
+            "condition": f"condition_{idx}",
+            "boundary": "",
+            "patch": {"op": "append", "content": f"Repair {idx}."},
+        }
+        for idx in range(1, 3)
+    ]
+
+    root, artifact = type_guided_merge_v2.merge_type_guided_v2_records(
+        skill_content="",
+        patch_records=records,
+        min_support=1,
+        tree_builder="recursive",
+        top_mode="auto",
+        verbose=False,
+    )
+
+    hierarchy = artifact["hierarchy"]
+    assert hierarchy["top_mode"] == "virtual_root"
+    assert hierarchy["virtual_root"] is True
+    assert hierarchy["top_node_ids"] == ["L1", "L2"]
+    assert hierarchy["fallback_top_node_ids"] == ["L1", "L2"]
+    assert root["shared_core"] is None
+    assert "virtual-root frontier carrier" in root["reasoning"]
+    json.dumps(artifact)
 
 
 def test_type_guided_v2_cluster_type_propagates_to_leaf(monkeypatch):

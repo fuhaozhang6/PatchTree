@@ -342,6 +342,7 @@ def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(
             file,
             delimiter="\t",
+            lineterminator="\n",
             fieldnames=["run_name", "skill_path"],
         )
         writer.writeheader()
@@ -417,6 +418,7 @@ def _prepare_topdown(
         writer = csv.DictWriter(
             file,
             delimiter="\t",
+            lineterminator="\n",
             fieldnames=["child_id", "run_name"],
         )
         writer.writeheader()

@@ -352,15 +352,22 @@ def generate_patch_records(
         status = "failure" if q_i <= 0 else "unstable"
         candidates.append((sample_id, group, q_i, status))
 
+    n_candidates_before_limit = len(candidates)
     if max_patch_records > 0 and len(candidates) > max_patch_records:
+        # Prefer the most reliable failure evidence when analyst capacity is
+        # bounded: consistent failures first, then progressively less severe
+        # unstable samples.  More repeated observations break ties in favour
+        # of better-supported empirical success rates.
         candidates = sorted(
             candidates,
             key=lambda item: (
-                0 if item[3] == "unstable" else 1,
+                float(item[2]),
                 -len(item[1].get("rollouts", []) or []),
                 item[0],
             ),
         )[:max_patch_records]
+    n_candidates_dropped_by_limit = n_candidates_before_limit - len(candidates)
+    selected_candidate_ids = [sample_id for sample_id, _group, _q_i, _status in candidates]
 
     records: list[dict] = []
     reports: list[dict] = []
@@ -400,7 +407,9 @@ def generate_patch_records(
     if verbose:
         print(
             f"    [type-guided v2 records] samples={len(grouped)} "
-            f"stable={len(stable_successes)} candidates={len(candidates)} "
+            f"stable={len(stable_successes)} "
+            f"candidates={len(candidates)}/{n_candidates_before_limit} "
+            f"truncated={n_candidates_dropped_by_limit} "
             f"records={len(records)} no_patch={no_patch_count}"
         )
 
@@ -409,6 +418,9 @@ def generate_patch_records(
         "n_samples": len(grouped),
         "n_stable_success": len(stable_successes),
         "n_candidates": len(candidates),
+        "n_candidates_before_limit": n_candidates_before_limit,
+        "n_candidates_dropped_by_limit": n_candidates_dropped_by_limit,
+        "selected_candidate_ids": selected_candidate_ids,
         "n_records": len(records),
         "n_no_patch": no_patch_count,
         "stable_successes": stable_successes,
@@ -798,6 +810,11 @@ def merge_type_guided_v2_records(
     min_support: int = 2,
     max_leaf_groups: int = 8,
     tree_depth: int = 2,
+    tree_builder: str = "fixed",
+    max_tree_depth: int = 4,
+    merge_target_children: int = 3,
+    merge_max_children: int = 4,
+    top_mode: str = "auto",
     clustering_enabled: bool = False,
     cluster_target_size: int = 6,
     cluster_max_size: int = 10,
@@ -827,6 +844,11 @@ def merge_type_guided_v2_records(
         group_by_cluster=clustering_enabled,
         low_support_fallback=not clustering_enabled,
         tree_depth=tree_depth,
+        tree_builder=tree_builder,
+        max_tree_depth=max_tree_depth,
+        merge_target_children=merge_target_children,
+        merge_max_children=merge_max_children,
+        top_mode=top_mode,
         leaf_merge_workers=leaf_merge_workers,
         mid_merge_workers=mid_merge_workers,
         verbose=verbose,
@@ -837,7 +859,12 @@ def merge_type_guided_v2_records(
     artifact["settings"] = {
         **artifact.get("settings", {}),
         "version": "v2",
-        "tree_depth": max(int(tree_depth or 1), 1),
+        "tree_depth": int(artifact.get("tree_depth", max(int(tree_depth or 1), 1))),
+        "tree_builder": str(tree_builder or "fixed"),
+        "max_tree_depth": int(max_tree_depth),
+        "merge_target_children": int(merge_target_children),
+        "merge_max_children": int(merge_max_children),
+        "top_mode": str(top_mode or "auto"),
         "clustering_enabled": bool(clustering_enabled),
         "cluster_target_size": int(cluster_target_size),
         "cluster_max_size": int(cluster_max_size),

@@ -762,11 +762,15 @@ def _build_mid_groups(
     *,
     skill_content: str,
     leaf_patches: list[dict],
+    target_children: int = 3,
+    max_children: int = 4,
 ) -> tuple[list[dict], dict]:
     if not leaf_patches:
         return [], {"enabled": True, "status": "empty", "errors": []}
     payload = {
         "n_leaf_patches": len(leaf_patches),
+        "target_children": max(int(target_children or 3), 2),
+        "max_children": max(int(max_children or 4), max(int(target_children or 3), 2)),
         "leaves": [_leaf_card(leaf) for leaf in leaf_patches],
     }
     user = (
@@ -859,6 +863,293 @@ def _build_mid_patch(
     return patch
 
 
+def _node_id(node: dict, fallback: str = "") -> str:
+    return str(
+        node.get("node_id")
+        or node.get("mid_id")
+        or node.get("leaf_id")
+        or node.get("record_id")
+        or fallback
+    )
+
+
+def _dynamic_frontier_groups(
+    *,
+    skill_content: str,
+    frontier: list[dict],
+    level: int,
+    target_children: int,
+    max_children: int,
+) -> tuple[list[dict], dict]:
+    """Plan compatible non-overlapping groups over one executable frontier."""
+    planner_nodes: list[dict] = []
+    node_by_id: dict[str, dict] = {}
+    for idx, node in enumerate(frontier, start=1):
+        node_id = _node_id(node, f"F{level}_{idx}")
+        copied = dict(node)
+        copied["leaf_id"] = node_id
+        copied["node_id"] = node_id
+        planner_nodes.append(copied)
+        node_by_id[node_id] = node
+
+    groups, report = _build_mid_groups(
+        skill_content=skill_content,
+        leaf_patches=planner_nodes,
+        target_children=target_children,
+        max_children=max_children,
+    )
+    clean_groups: list[dict] = []
+    used: set[str] = set()
+    split_count = 0
+    for group in groups:
+        child_ids = [
+            str(child_id)
+            for child_id in group.get("leaf_ids", [])
+            if str(child_id) in node_by_id and str(child_id) not in used
+        ]
+        for start in range(0, len(child_ids), max_children):
+            chunk = child_ids[start:start + max_children]
+            if len(chunk) < 2:
+                continue
+            split_count += int(len(child_ids) > max_children)
+            for child_id in chunk:
+                used.add(child_id)
+            children = [node_by_id[child_id] for child_id in chunk]
+            support_ids = list(dict.fromkeys(
+                support_id
+                for child in children
+                for support_id in _as_clean_str_list(child.get("support_sample_ids"))
+            ))
+            clean_groups.append({
+                **group,
+                "mid_id": f"N{level}_{len(clean_groups) + 1}",
+                "leaf_ids": chunk,
+                "child_ids": chunk,
+                "support_count": len(support_ids) or sum(
+                    int(child.get("support_count", 0) or 0) for child in children
+                ),
+                "support_sample_ids": support_ids,
+                "target_children": target_children,
+                "max_children": max_children,
+            })
+    return clean_groups, {
+        **report,
+        "level": level,
+        "target_children": target_children,
+        "max_children": max_children,
+        "n_frontier_in": len(frontier),
+        "n_merge_groups": len(clean_groups),
+        "n_grouped_nodes": len(used),
+        "n_carried_nodes": len(frontier) - len(used),
+        "n_oversized_groups_split": split_count,
+    }
+
+
+def _build_dynamic_hierarchy(
+    *,
+    skill_content: str,
+    leaf_patches: list[dict],
+    max_tree_depth: int,
+    target_children: int,
+    max_children: int,
+    top_mode: str,
+    allow_open_types: bool,
+    merge_workers: int,
+    verbose: bool,
+) -> tuple[dict, dict]:
+    """Build an optimizer-planned hierarchy until no valid parent is proposed."""
+    node_by_id: dict[str, dict] = {}
+    frontier: list[dict] = []
+    levels: list[list[str]] = []
+    for idx, leaf in enumerate(leaf_patches, start=1):
+        node_id = _node_id(leaf, f"L{idx}")
+        leaf["node_id"] = node_id
+        leaf["node_level"] = "leaf"
+        leaf["tree_level"] = 0
+        leaf["child_ids"] = []
+        leaf["leaf_ids"] = list(dict.fromkeys([
+            *_as_clean_str_list(leaf.get("leaf_ids")),
+            str(leaf.get("leaf_id") or node_id),
+        ]))
+        leaf["leaf_coverage"] = len(leaf["leaf_ids"])
+        node_by_id[node_id] = leaf
+        frontier.append(leaf)
+    levels.append([_node_id(node) for node in frontier])
+
+    level_reports: list[dict] = []
+    internal_nodes: list[dict] = []
+    max_merge_levels = max(max(int(max_tree_depth), 2) - 1, 1)
+    for level in range(1, max_merge_levels + 1):
+        if len(frontier) <= 1:
+            break
+        groups, plan = _dynamic_frontier_groups(
+            skill_content=skill_content,
+            frontier=frontier,
+            level=level,
+            target_children=target_children,
+            max_children=max_children,
+        )
+        level_reports.append(plan)
+        if not groups:
+            break
+        frontier_by_id = {_node_id(node): node for node in frontier}
+
+        def build_parent(group: dict) -> dict | None:
+            child_ids = _as_clean_str_list(group.get("child_ids"))
+            planner_children: dict[str, dict] = {}
+            for child_id in child_ids:
+                child = dict(frontier_by_id[child_id])
+                child["leaf_id"] = child_id
+                planner_children[child_id] = child
+            parent = _build_mid_patch(
+                skill_content=skill_content,
+                group=group,
+                leaf_patches_by_id=planner_children,
+                allow_open_types=allow_open_types,
+            )
+            if not isinstance(parent.get("shared_core"), dict):
+                return None
+            node_id = str(group["mid_id"])
+            actual_children = [frontier_by_id[child_id] for child_id in child_ids]
+            leaf_ids = list(dict.fromkeys(
+                leaf_id
+                for child in actual_children
+                for leaf_id in _as_clean_str_list(child.get("leaf_ids"))
+            ))
+            parent.update({
+                "node_id": node_id,
+                "node_level": "internal",
+                "tree_level": level,
+                "child_ids": child_ids,
+                "leaf_ids": leaf_ids,
+                "leaf_coverage": len(leaf_ids),
+            })
+            for edit in _patch_edits(parent):
+                edit["leaf_ids"] = leaf_ids
+                edit["node_ids"] = [node_id]
+            return parent
+
+        workers = max(1, min(int(merge_workers or 1), len(groups)))
+        if workers == 1:
+            built_parents = [build_parent(group) for group in groups]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                built_parents = list(executor.map(build_parent, groups))
+        parents = [parent for parent in built_parents if isinstance(parent, dict)]
+        if not parents:
+            level_reports[-1]["status"] = "no_executable_abstraction"
+            break
+        grouped_ids = {
+            child_id
+            for parent in parents
+            for child_id in _as_clean_str_list(parent.get("child_ids"))
+        }
+        carried = [node for node in frontier if _node_id(node) not in grouped_ids]
+        frontier = [*parents, *carried]
+        for parent in parents:
+            node_by_id[_node_id(parent)] = parent
+        internal_nodes.extend(parents)
+        levels.append([_node_id(node) for node in frontier])
+        if verbose:
+            print(
+                f"    [PatchTree dynamic] level={level} "
+                f"parents={len(parents)} carried={len(carried)} frontier={len(frontier)}"
+            )
+
+    top_nodes = frontier
+    requested_top_mode = str(top_mode or "auto").strip().lower()
+    if requested_top_mode not in {"auto", "real_root", "virtual_root"}:
+        requested_top_mode = "auto"
+    resolved_top_mode = "real_root" if len(top_nodes) == 1 else requested_top_mode
+    root_patch: dict
+    real_root_attempt: dict | None = None
+    if len(top_nodes) == 1:
+        root_patch = top_nodes[0]
+    elif (
+        requested_top_mode in {"auto", "real_root"}
+        and len(top_nodes) <= max_children
+        and len(levels) < max_tree_depth
+    ):
+        real_root_attempt = _build_root_patch(
+            skill_content=skill_content,
+            child_patches=top_nodes,
+            allow_open_types=allow_open_types,
+            child_level="frontier",
+        )
+        top_ids = {_node_id(node) for node in top_nodes}
+        covered_ids: set[str] = set()
+        shared_core = real_root_attempt.get("shared_core")
+        if isinstance(shared_core, dict):
+            covered_ids.update(_as_clean_str_list(shared_core.get("source_child_ids")))
+        for residual in real_root_attempt.get("conditional_residuals", []):
+            if isinstance(residual, dict):
+                covered_ids.update(_as_clean_str_list(residual.get("source_child_ids")))
+        has_genuine_core = (
+            isinstance(shared_core, dict)
+            and top_ids.issubset(covered_ids)
+        )
+        if requested_top_mode == "real_root" or has_genuine_core:
+            resolved_top_mode = "real_root"
+            root_patch = real_root_attempt
+            root_patch.update({
+                "node_id": "ROOT",
+                "node_level": "root",
+                "tree_level": len(levels),
+                "child_ids": [_node_id(node) for node in top_nodes],
+                "leaf_ids": list(dict.fromkeys(
+                    leaf_id
+                    for node in top_nodes
+                    for leaf_id in _as_clean_str_list(node.get("leaf_ids"))
+                )),
+            })
+            root_patch["leaf_coverage"] = len(root_patch["leaf_ids"])
+            node_by_id["ROOT"] = root_patch
+        else:
+            resolved_top_mode = "virtual_root"
+            root_patch = _fallback_parent_patch(
+                top_nodes,
+                allow_open_types=allow_open_types,
+                reasoning="virtual-root frontier carrier; not an executable abstraction",
+            )
+    else:
+        resolved_top_mode = "virtual_root"
+        root_patch = _fallback_parent_patch(
+            top_nodes,
+            allow_open_types=allow_open_types,
+            reasoning="virtual-root frontier carrier; not an executable abstraction",
+        )
+
+    virtual_root = resolved_top_mode == "virtual_root"
+    fallback_top_ids = (
+        _as_clean_str_list(root_patch.get("child_ids"))
+        if len(top_nodes) == 1 and not virtual_root
+        else [_node_id(node) for node in top_nodes]
+    )
+    return root_patch, {
+        "builder": "recursive",
+        "top_mode_requested": requested_top_mode,
+        "top_mode": resolved_top_mode,
+        "virtual_root": virtual_root,
+        "top_node_ids": [_node_id(node) for node in top_nodes],
+        "top_patches": top_nodes,
+        "fallback_top_node_ids": fallback_top_ids,
+        "fallback_top_patches": [
+            node_by_id[node_id]
+            for node_id in fallback_top_ids
+            if node_id in node_by_id
+        ],
+        "node_by_id": node_by_id,
+        "levels": levels,
+        "level_reports": level_reports,
+        "internal_nodes": internal_nodes,
+        "real_root_attempt": real_root_attempt,
+        "max_tree_depth": max_tree_depth,
+        "actual_tree_depth": len(levels) + int("ROOT" in node_by_id),
+        "target_children": target_children,
+        "max_children": max_children,
+    }
+
+
 def _empty_patch(update_mode: str, reasoning: str) -> dict:
     return {"reasoning": reasoning, payload_key(update_mode): []}
 
@@ -873,6 +1164,11 @@ def build_patchtree(
     group_by_cluster: bool = False,
     low_support_fallback: bool = True,
     tree_depth: int = 2,
+    tree_builder: str = "fixed",
+    max_tree_depth: int = 4,
+    merge_target_children: int = 3,
+    merge_max_children: int = 4,
+    top_mode: str = "auto",
     leaf_merge_workers: int = 1,
     mid_merge_workers: int = 1,
     verbose: bool = True,
@@ -1041,7 +1337,11 @@ def build_patchtree(
     }
     root_children_level = "leaf"
     root_child_patches = leaf_patches
-    if tree_depth >= 3 and len(leaf_patches) > 1:
+    if (
+        str(tree_builder or "fixed").strip().lower() != "recursive"
+        and tree_depth >= 3
+        and len(leaf_patches) > 1
+    ):
         mid_groups, mid_plan = _build_mid_groups(
             skill_content=skill_content,
             leaf_patches=leaf_patches,
@@ -1071,12 +1371,33 @@ def build_patchtree(
             root_children_level = "mid"
             root_child_patches = mid_patches
 
-    root_patch = _build_root_patch(
-        skill_content=skill_content,
-        child_patches=root_child_patches,
-        allow_open_types=allow_open_types,
-        child_level=root_children_level,
-    )
+    hierarchy: dict = {"builder": "fixed", "virtual_root": False}
+    if str(tree_builder or "fixed").strip().lower() == "recursive":
+        root_patch, hierarchy = _build_dynamic_hierarchy(
+            skill_content=skill_content,
+            leaf_patches=leaf_patches,
+            max_tree_depth=max(int(max_tree_depth or 4), 2),
+            target_children=max(int(merge_target_children or 3), 2),
+            max_children=max(
+                int(merge_max_children or 4),
+                max(int(merge_target_children or 3), 2),
+            ),
+            top_mode=top_mode,
+            allow_open_types=allow_open_types,
+            merge_workers=mid_merge_workers,
+            verbose=verbose,
+        )
+        root_children_level = "frontier"
+        root_child_patches = hierarchy["fallback_top_patches"]
+        mid_patches = hierarchy["internal_nodes"]
+        tree_depth = hierarchy["actual_tree_depth"]
+    else:
+        root_patch = _build_root_patch(
+            skill_content=skill_content,
+            child_patches=root_child_patches,
+            allow_open_types=allow_open_types,
+            child_level=root_children_level,
+        )
 
     artifact = {
         "enabled": True,
@@ -1092,6 +1413,7 @@ def build_patchtree(
         "root_children_level": root_children_level,
         "root_child_patches": root_child_patches,
         "root_patch": root_patch,
+        "hierarchy": hierarchy,
         "settings": {
             "min_support": min_support,
             "max_leaf_groups": max_leaf_groups,
@@ -1099,6 +1421,11 @@ def build_patchtree(
             "group_by_cluster": group_by_cluster,
             "low_support_fallback": low_support_fallback,
             "tree_depth": tree_depth,
+            "tree_builder": hierarchy.get("builder", "fixed"),
+            "max_tree_depth": max_tree_depth,
+            "merge_target_children": merge_target_children,
+            "merge_max_children": merge_max_children,
+            "top_mode": hierarchy.get("top_mode", "real_root"),
             "leaf_merge_workers": leaf_workers,
             "mid_merge_workers": (
                 max(1, min(int(mid_merge_workers or 1), len(mid_groups)))

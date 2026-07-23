@@ -18,6 +18,50 @@ resource_truthy() {
   esac
 }
 
+# Probe whether the ALFWorld Python stack is importable in the run interpreter.
+# Returns 0 when alfworld + gymnasium + omegaconf and our adapter all import.
+alfworld_imports_ok() {
+  local python_bin="${PYTHON_BIN:-python}"
+  PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}" "${python_bin}" - <<'PY' >/dev/null 2>&1
+import importlib.util
+for name in ("alfworld", "gymnasium", "omegaconf"):
+    if importlib.util.find_spec(name) is None:
+        raise SystemExit(1)
+from skillopt.envs.alfworld.adapter import ALFWorldAdapter  # noqa: F401
+PY
+}
+
+# Ensure ALFWorld data + Python deps are ready before launching a run. The
+# gymnasium/omegaconf deps ship in the ".[alfworld]" extra but are easy to miss
+# on a fresh node (the run then dies mid-training on `import gymnasium`). When
+# ALFWORLD_AUTO_INSTALL=1 (default) we pip-install them on the fly and re-probe;
+# set it to 0 to only self-check and fail with the exact install command.
+require_alfworld_environment() {
+  local python_bin="${PYTHON_BIN:-python}"
+  export ALFWORLD_DATA="${ALFWORLD_DATA:-${PROJECT_ROOT}/data/alfworld}"
+  if resource_truthy "${DRY_RUN:-0}"; then
+    return
+  fi
+  command -v "${python_bin}" >/dev/null 2>&1 || resource_fail "Python interpreter not found: ${python_bin}"
+  [[ -d "${ALFWORLD_DATA}/json_2.1.1" ]] || resource_fail \
+    "ALFWorld data not found at ${ALFWORLD_DATA}/json_2.1.1 (unpack the split data bundle first)"
+
+  if alfworld_imports_ok; then
+    return
+  fi
+
+  if resource_truthy "${ALFWORLD_AUTO_INSTALL:-1}"; then
+    echo "[deps] ALFWorld Python deps missing — installing .[alfworld] + omegaconf json_repair ..."
+    ( cd "${PROJECT_ROOT}" \
+        && "${python_bin}" -m pip install -e ".[alfworld]" \
+        && "${python_bin}" -m pip install omegaconf json_repair ) \
+      || resource_fail "ALFWorld dependency install failed (see pip output above)"
+  fi
+
+  alfworld_imports_ok || resource_fail \
+    "ALFWorld Python env still not ready. Run: cd ${PROJECT_ROOT} && ${python_bin} -m pip install -e \".[alfworld]\" && ${python_bin} -m pip install omegaconf json_repair"
+}
+
 configure_single_l20() {
   local visible_devices
   visible_devices="${QWEN_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"

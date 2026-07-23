@@ -6,6 +6,8 @@ from skillopt.engine.trainer import (
     _load_selection_result_cache,
     _save_selection_result_cache,
     _slice_selection_results,
+    _type_guided_fallback_sample_seed,
+    _recursive_fallback_children,
 )
 from skillopt.envs.searchqa.dataloader import SearchQADataLoader
 from skillopt.utils import compute_score
@@ -44,6 +46,34 @@ def test_eval_random_subset_is_deterministic_and_does_not_change_prefix_mode():
     assert sample_a.payload != sample_c.payload
     assert sample_a.metadata["sampling"] == "random_without_replacement"
     assert prefix.metadata["sampling"] == "prefix"
+
+
+def test_fallback_representative_subset_seed_is_step_invariant():
+    assert _type_guided_fallback_sample_seed(42) == 139
+    assert _type_guided_fallback_sample_seed(42) == 139
+    assert _type_guided_fallback_sample_seed(43) == 140
+
+
+def test_recursive_fallback_descends_to_direct_children_but_stops_at_leaf():
+    leaf_a = {"node_id": "L1", "leaf_ids": ["L1"], "leaf_coverage": 1}
+    leaf_b = {"node_id": "L2", "leaf_ids": ["L2"], "leaf_coverage": 1}
+    parent = {
+        "node_id": "N1",
+        "child_ids": ["L1", "L2"],
+        "leaf_ids": ["L1", "L2"],
+        "leaf_coverage": 2,
+    }
+    registry = {"L1": leaf_a, "L2": leaf_b, "N1": parent}
+
+    assert _recursive_fallback_children(
+        parent, node_by_id=registry, min_leaf_coverage=1,
+    ) == [leaf_a, leaf_b]
+    assert _recursive_fallback_children(
+        leaf_a, node_by_id=registry, min_leaf_coverage=1,
+    ) == []
+    assert _recursive_fallback_children(
+        parent, node_by_id=registry, min_leaf_coverage=2,
+    ) == []
 
 
 def test_full_selection_cache_can_score_the_exact_fallback_subset(tmp_path):

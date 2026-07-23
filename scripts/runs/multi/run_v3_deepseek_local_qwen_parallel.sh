@@ -145,10 +145,10 @@ API_MAX_CONCURRENCY="${API_MAX_CONCURRENCY:-96}"
 WORKERS="${WORKERS:-48}"
 ANALYST_WORKERS="${ANALYST_WORKERS:-24}"
 
-LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
+LR_SCHEDULER="${LR_SCHEDULER:-constant}"
 LR_CONTROL_MODE="${LR_CONTROL_MODE:-fixed}"
-EDIT_BUDGET="${EDIT_BUDGET:-4}"
-MIN_EDIT_BUDGET="${MIN_EDIT_BUDGET:-2}"
+EDIT_BUDGET="${EDIT_BUDGET:-999}"
+MIN_EDIT_BUDGET="${MIN_EDIT_BUDGET:-999}"
 USE_GATE="${USE_GATE:-true}"
 GATE_METRIC="${GATE_METRIC:-mixed}"
 GATE_MIXED_WEIGHT="${GATE_MIXED_WEIGHT:-0.5}"
@@ -168,7 +168,7 @@ TYPE_GUIDED_ROLLOUT_REPEATS="${TYPE_GUIDED_ROLLOUT_REPEATS:-3}"
 TYPE_GUIDED_MAX_PATCH_RECORDS="${TYPE_GUIDED_MAX_PATCH_RECORDS:-24}"
 TYPE_GUIDED_TAU_SUCC="${TYPE_GUIDED_TAU_SUCC:-1.0}"
 TYPE_GUIDED_PATCH_RECORD_WORKERS="${TYPE_GUIDED_PATCH_RECORD_WORKERS:-}"
-TYPE_GUIDED_CLUSTERING="${TYPE_GUIDED_CLUSTERING:-true}"
+TYPE_GUIDED_CLUSTERING="${TYPE_GUIDED_CLUSTERING:-false}"
 TYPE_GUIDED_CLUSTER_TARGET_SIZE="${TYPE_GUIDED_CLUSTER_TARGET_SIZE:-4}"
 TYPE_GUIDED_CLUSTER_MAX_SIZE="${TYPE_GUIDED_CLUSTER_MAX_SIZE:-8}"
 TYPE_GUIDED_LEAF_MERGE_WORKERS="${TYPE_GUIDED_LEAF_MERGE_WORKERS:-4}"
@@ -177,7 +177,7 @@ TYPE_GUIDED_FALLBACK_EVAL_ALL_LEAVES="${TYPE_GUIDED_FALLBACK_EVAL_ALL_LEAVES:-tr
 TYPE_GUIDED_FALLBACK_TOP_K="${TYPE_GUIDED_FALLBACK_TOP_K:-0}"
 TYPE_GUIDED_FALLBACK_TAU_CHILD="${TYPE_GUIDED_FALLBACK_TAU_CHILD:-0.0}"
 TYPE_GUIDED_FALLBACK_SEL_ENV_NUM="${TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-0}"
-TYPE_GUIDED_FALLBACK_RECONCILE="${TYPE_GUIDED_FALLBACK_RECONCILE:-deterministic}"
+TYPE_GUIDED_FALLBACK_RECONCILE="${TYPE_GUIDED_FALLBACK_RECONCILE:-llm_fuse}"
 TYPE_GUIDED_FALLBACK_RECONCILE_MIN_CHILDREN="${TYPE_GUIDED_FALLBACK_RECONCILE_MIN_CHILDREN:-2}"
 TYPE_GUIDED_TAIL_BANK="${TYPE_GUIDED_TAIL_BANK:-true}"
 TYPE_GUIDED_TAIL_MIN_SUPPORT="${TYPE_GUIDED_TAIL_MIN_SUPPORT:-2}"
@@ -660,6 +660,7 @@ launch_dataset() {
       max_steps="${ALFWORLD_MAX_STEPS:-50}"
       extra_args+=(--max_api_workers "${ALFWORLD_MAX_API_WORKERS:-4}")
       cfg_options+=("optimizer.type_guided_min_support=${ALFWORLD_TYPE_GUIDED_MIN_SUPPORT:-1}")
+      fallback_sel_env_num="${ALFWORLD_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-12}"
       ;;
     livemath|livemathematicianbench)
       dataset="livemath"
@@ -673,6 +674,7 @@ launch_dataset() {
       max_turns="${LIVEMATH_MAX_TURNS:-1}"
       exec_timeout="${LIVEMATH_EXEC_TIMEOUT:-300}"
       target_max_completion_tokens="${LIVEMATH_TARGET_MAX_COMPLETION_TOKENS}"
+      fallback_sel_env_num="${LIVEMATH_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-12}"
       extra_args+=(
         --shuffle_choices "$(dataset_bool_default "${LIVEMATH_SHUFFLE_CHOICES:-}" true)"
         --use_theorem "$(dataset_bool_default "${LIVEMATH_USE_THEOREM:-}" false)"
@@ -691,6 +693,7 @@ launch_dataset() {
       test_env_num="${DOCVQA_TEST_ENV_NUM:-0}"
       max_turns="${DOCVQA_MAX_TURNS:-1}"
       exec_timeout="${DOCVQA_EXEC_TIMEOUT:-300}"
+      fallback_sel_env_num="${DOCVQA_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-32}"
       extra_args+=(--image_detail "${DOCVQA_IMAGE_DETAIL:-auto}")
       ;;
     officeqa)
@@ -702,6 +705,7 @@ launch_dataset() {
       sel_env_num="${OFFICEQA_SEL_ENV_NUM:-0}"
       test_env_num="${OFFICEQA_TEST_ENV_NUM:-0}"
       exec_timeout="${OFFICEQA_EXEC_TIMEOUT:-300}"
+      fallback_sel_env_num="${OFFICEQA_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-16}"
       cfg_options+=("env.data_dirs=${OFFICEQA_DOCS_DIR}")
       # OfficeQA requires document lookup over Treasury bulletin files; no-tools mode
       # often collapses to all-zero exact match on numeric/table questions.
@@ -722,6 +726,7 @@ launch_dataset() {
       max_turns="${SPREADSHEETBENCH_MAX_TURNS:-30}"
       exec_timeout="${SPREADSHEETBENCH_EXEC_TIMEOUT:-1200}"
       llm_timeout="${SPREADSHEETBENCH_LLM_TIMEOUT:-300}"
+      fallback_sel_env_num="${SPREADSHEETBENCH_TYPE_GUIDED_FALLBACK_SEL_ENV_NUM:-24}"
       extra_args+=(--data_root "${SPREADSHEETBENCH_DATA_ROOT}")
       if ! truthy "${DRY_RUN}"; then
         require_dir "SpreadsheetBench data root" "${SPREADSHEETBENCH_DATA_ROOT}"
